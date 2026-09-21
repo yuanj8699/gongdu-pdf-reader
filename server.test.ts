@@ -1188,6 +1188,157 @@ describe("interact tool", () => {
     await server.close();
   });
 
+  describe("display_mode", () => {
+    for (const batch of [false, true]) {
+      const inputKind = batch ? "batch" : "single command";
+
+      it(`requires mode in ${inputKind}`, async () => {
+        const { server, client } = await connect();
+        try {
+          const command = { action: "display_mode" };
+          const r = await client.callTool({
+            name: "interact",
+            arguments: {
+              viewUUID: `display-mode-missing-${batch}`,
+              ...(batch ? { commands: [command] } : command),
+            },
+          });
+          expect(r.isError).toBe(true);
+          expect(firstText(r)).toContain("display_mode requires `mode`");
+        } finally {
+          await client.close();
+          await server.close();
+        }
+      });
+
+      it(`rejects unsupported mode in ${inputKind}`, async () => {
+        const { server, client } = await connect();
+        try {
+          const command = { action: "display_mode", mode: "pip" };
+          const r = await client.callTool({
+            name: "interact",
+            arguments: {
+              viewUUID: `display-mode-invalid-${batch}`,
+              ...(batch ? { commands: [command] } : command),
+            },
+          });
+          expect(r.isError).toBe(true);
+          expect(firstText(r)).toContain("mode");
+          expect(firstText(r)).toContain("fullscreen");
+        } finally {
+          await client.close();
+          await server.close();
+        }
+      });
+
+      it(`waits for confirmed display mode in ${inputKind}`, async () => {
+        const { server, client } = await connect();
+        const uuid = `display-mode-confirmed-${batch}`;
+        const mode = batch ? "inline" : "fullscreen";
+        try {
+          const command = { action: "display_mode", mode };
+          let completed = false;
+          const interaction = client
+            .callTool({
+              name: "interact",
+              arguments: {
+                viewUUID: uuid,
+                ...(batch ? { commands: [command] } : command),
+              },
+            })
+            .then((result) => {
+              completed = true;
+              return result;
+            });
+          const commands = await poll(client, uuid);
+          expect(commands).toHaveLength(1);
+          expect(commands[0]).toEqual({
+            type: "display_mode",
+            mode,
+            requestId: expect.any(String),
+          });
+          expect(completed).toBe(false);
+
+          const state = { currentPage: 2, pageCount: 3, displayMode: mode };
+          const submission = await client.callTool({
+            name: "submit_viewer_state",
+            arguments: {
+              requestId: commands[0].requestId as string,
+              state: JSON.stringify(state),
+            },
+          });
+          expect(submission.isError).toBeFalsy();
+          const r = await interaction;
+          expect(r.isError).toBeFalsy();
+          expect(JSON.parse(firstText(r))).toEqual(state);
+        } finally {
+          await client.close();
+          await server.close();
+        }
+      });
+    }
+
+    it("returns the viewer error instead of queued success", async () => {
+      const { server, client } = await connect();
+      const uuid = "display-mode-viewer-error";
+      try {
+        const interaction = client.callTool({
+          name: "interact",
+          arguments: {
+            viewUUID: uuid,
+            action: "display_mode",
+            mode: "fullscreen",
+          },
+        });
+        const commands = await poll(client, uuid);
+        await client.callTool({
+          name: "submit_viewer_state",
+          arguments: {
+            requestId: commands[0].requestId as string,
+            error: "Host does not support fullscreen",
+          },
+        });
+        const r = await interaction;
+        expect(r.isError).toBe(true);
+        expect(firstText(r)).toContain("Host does not support fullscreen");
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    });
+
+    it("rejects a state snapshot that reports a different display mode", async () => {
+      const { server, client } = await connect();
+      const uuid = "display-mode-mismatch";
+      try {
+        const interaction = client.callTool({
+          name: "interact",
+          arguments: {
+            viewUUID: uuid,
+            action: "display_mode",
+            mode: "fullscreen",
+          },
+        });
+        const commands = await poll(client, uuid);
+        await client.callTool({
+          name: "submit_viewer_state",
+          arguments: {
+            requestId: commands[0].requestId as string,
+            state: JSON.stringify({ displayMode: "inline" }),
+          },
+        });
+        const r = await interaction;
+        expect(r.isError).toBe(true);
+        expect(firstText(r)).toContain(
+          "Requested fullscreen, but the viewer reported inline",
+        );
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    });
+  });
+
   it("fill_form without `fields` returns isError with a helpful message", async () => {
     const { server, client } = await connect();
 

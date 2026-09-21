@@ -46,6 +46,11 @@ export type PdfCommand =
   | { type: "find"; query: string }
   | { type: "search_navigate"; matchIndex: number }
   | { type: "zoom"; scale: number }
+  | {
+      type: "display_mode";
+      mode: "inline" | "fullscreen";
+      requestId: string;
+    }
   | { type: "add_annotations"; annotations: PdfAnnotationDef[] }
   | { type: "update_annotations"; annotations: PdfAnnotationPatch[] }
   | { type: "remove_annotations"; ids: string[] }

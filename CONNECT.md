@@ -86,6 +86,26 @@ Codex 官方 app-server 提供 `config/mcpServer/reload`：重读磁盘配置，
 
 阅读位置和书签属于本机阅读状态，不代表已经实现跨设备同步。
 
+## 在右侧栏保留完整阅读器与目录
+
+当前 Codex 桌面客户端会把 MCP App 的 `fullscreen` 模式放进右侧栏，并移动
+原来的阅读器界面，保留文档、章节目录和选区提问。点击聊天阅读器右上角的
+“展开阅读器”（旧版为四角展开图标），或在阅读器内按 Ctrl+Enter，即可进入。
+较窄的侧栏中，点击“目录”展开章节树；选完章节后目录会收起以留出正文空间。
+
+模型应沿用 `display_pdf` 返回的 `viewUUID`，调用：
+
+```json
+{"viewUUID":"原阅读器的 UUID","action":"display_mode","mode":"fullscreen"}
+```
+
+返回的 `displayMode` 为 `fullscreen` 才表示切换得到确认。传 `inline` 可回到
+聊天内显示。此命令需要客户端已加载本次更新后的 MCP 工具和阅读器页面。
+
+`open_in_codex` 的文件预览是另一种界面：已实测可用 PDF 选区批注提问，但它
+不提供本项目的章节树。用户要求“侧栏阅读器与目录”时应使用上述展开操作，
+不能用打开 PDF 文件预览来代替。
+
 ## 直接调试 MCP 服务
 
 需要 MCP Inspector 或独立测试 host 时，可运行：

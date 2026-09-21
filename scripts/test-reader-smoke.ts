@@ -176,6 +176,31 @@ try {
   assert.match(singleCharacterMessage, /2/);
   check("single Chinese character reaches host context and explicit question");
 
+  const expanded = await client.callTool({ name: "interact", arguments: {
+    viewUUID: initial.structuredContent?.viewUUID, action: "display_mode", mode: "fullscreen",
+  } });
+  assert.ok(!expanded.isError, JSON.stringify(expanded));
+  assert.equal(JSON.parse(textOf(expanded)).displayMode, "fullscreen");
+  await expect(view.getByRole("button", { name: "收起阅读器", exact: true })).toBeVisible();
+  await expect(view.locator("#page-input")).toHaveValue("2");
+  await expect(view.locator("#reader-navigation")).toContainText("第一章 起步");
+  await selectText("章");
+  await view.locator("#explain-selection-btn").click();
+  await expect.poll(async () => (await observations()).messages.length).toBe(2);
+  assert.match(textOf((await observations()).messages[1]), /章/);
+  check("model-requested expanded reader preserves page, outline and selection questions");
+
+  await view.getByRole("button", { name: "收起阅读器", exact: true }).click();
+  await expect(view.getByRole("button", { name: "展开阅读器", exact: true })).toBeVisible();
+  await page.evaluate(() => { (window as any).observations.rejectNextDisplayMode = true; });
+  const refusedMode = await client.callTool({ name: "interact", arguments: {
+    viewUUID: initial.structuredContent?.viewUUID, action: "display_mode", mode: "fullscreen",
+  } });
+  assert.equal(refusedMode.isError, true, JSON.stringify(refusedMode));
+  assert.match(textOf(refusedMode), /未切换/);
+  await expect(view.getByRole("button", { name: "展开阅读器", exact: true })).toBeVisible();
+  check("host refusal to expand is reported as a tool error instead of success");
+
   await view.locator("#next-btn").click();
   await expect(view.locator("#page-input")).toHaveValue("3");
   await expect(view.locator("#explain-selection-btn")).toBeDisabled();
@@ -186,8 +211,8 @@ try {
   await selectText("你好");
   await expect.poll(async () => textOf((await observations()).contexts.at(-1))).toContain("<pdf-selection>你好</pdf-selection>");
   await view.locator("#explain-selection-btn").click();
-  await expect.poll(async () => (await observations()).messages.length).toBe(2);
-  assert.ok(textOf((await observations()).messages[1]).includes("你好"));
+  await expect.poll(async () => (await observations()).messages.length).toBe(3);
+  assert.ok(textOf((await observations()).messages[2]).includes("你好"));
   check("two-character Chinese selection remains available when button is clicked");
 
   await page.evaluate(() => { (window as any).observations.rejectNextMessage = true; });
@@ -251,6 +276,15 @@ try {
   await page.setViewportSize({ width: 620, height: 850 });
   await expect(view.locator("#explain-selection-btn")).toBeVisible();
   await page.screenshot({ path: path.join(artifacts, "reader-smoke-narrow.png"), fullPage: true });
+  await page.setViewportSize({ width: 380, height: 850 });
+  await expect(view.locator("#outline-toggle")).toBeVisible();
+  await view.locator("#outline-toggle").click();
+  await expect(view.locator('#reader-navigation button[data-page="3"]')).toBeVisible();
+  await view.locator('#reader-navigation button[data-page="3"]').click();
+  await expect(view.locator("#page-input")).toHaveValue("3");
+  await expect(view.getByRole("button", { name: "展开阅读器", exact: true })).toBeVisible();
+  await page.screenshot({ path: path.join(artifacts, "reader-smoke-sidebar.png"), fullPage: true });
+  check("380px sidebar keeps an accessible outline button and chapter navigation");
   await page.setViewportSize({ width: 1200, height: 950 });
   await page.goto(`http://127.0.0.1:${http.port}/?no-outline=1`);
   view = page.frameLocator("iframe");

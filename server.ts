@@ -1457,6 +1457,7 @@ Returns a viewUUID in structuredContent. Pass it to \`interact\`:
 - add_annotations, update_annotations, remove_annotations, highlight_text
 - fill_form (fill PDF form fields)
 - navigate, search, find, search_navigate, zoom
+- display_mode (fullscreen opens the complete reader in Codex's right panel; inline returns it to the conversation)
 - get_text, get_screenshot, get_viewer_state (extract content / read selection & current page)
 - save_as (write annotated PDF to disk)
 
@@ -1737,6 +1738,7 @@ URL: ${normalized}`,
           "find",
           "search_navigate",
           "zoom",
+          "display_mode",
           "add_annotations",
           "update_annotations",
           "remove_annotations",
@@ -1770,6 +1772,12 @@ URL: ${normalized}`,
         .max(3.0)
         .optional()
         .describe("Zoom scale, 1.0 = 100% (for zoom)"),
+      mode: z
+        .enum(["inline", "fullscreen"])
+        .optional()
+        .describe(
+          "Display mode (for display_mode): fullscreen opens the full reader in Codex's right panel; inline returns it to the conversation",
+        ),
       annotations: z
         .array(z.record(z.string(), z.any()))
         .optional()
@@ -1943,6 +1951,7 @@ URL: ${normalized}`,
         query,
         matchIndex,
         scale,
+        mode,
         annotations,
         ids,
         color,
@@ -2333,6 +2342,37 @@ URL: ${normalized}`,
             );
           }
         }
+        case "display_mode": {
+          if (mode == null) {
+            return {
+              content: [{ type: "text", text: "display_mode requires `mode`" }],
+              isError: true,
+            };
+          }
+          const requestId = randomUUID();
+          enqueueCommand(uuid, { type: "display_mode", mode, requestId });
+          try {
+            await ensureViewerIsPolling(uuid);
+            const state = await waitForViewerState(requestId, signal);
+            const actualMode = JSON.parse(state)?.displayMode;
+            if (actualMode !== mode) {
+              throw new Error(
+                `Requested ${mode}, but the viewer reported ${String(actualMode)}`,
+              );
+            }
+            return { content: [{ type: "text", text: state }] };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `display_mode failed: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
         case "get_viewer_state": {
           const requestId = randomUUID();
           enqueueCommand(uuid, { type: "get_viewer_state", requestId });
@@ -2407,6 +2447,8 @@ Example — add a signature image and a stamp, then screenshot to verify:
 
 **NAVIGATION**: navigate (page), search (query), find (query, silent), search_navigate (matchIndex), zoom (scale 0.5–3.0)
 
+**DISPLAY**: display_mode requires \`mode\`: \`fullscreen\` or \`inline\`. In Codex, fullscreen opens this complete PDF reader in the right panel, preserving its chapter outline and selection tools; inline returns it to the conversation. For a sidebar reading request, use \`interact\` with display_mode/fullscreen, not \`open_in_codex\` with a PDF file (that opens a different preview without this reader's outline). Success is returned only after the viewer confirms the actual display mode.
+
 **TEXT/SCREENSHOTS**:
 • get_text: extract text from pages. Optional \`page\` for single page, or \`intervals\` for ranges [{start?,end?}]. Max 20 pages.
 • get_screenshot: capture a single page as PNG image. Requires \`page\`.
@@ -2429,6 +2471,7 @@ Example — add a signature image and a stamp, then screenshot to verify:
               "find",
               "search_navigate",
               "zoom",
+              "display_mode",
               "add_annotations",
               "update_annotations",
               "remove_annotations",
@@ -2465,6 +2508,12 @@ Example — add a signature image and a stamp, then screenshot to verify:
             .max(3.0)
             .optional()
             .describe("Zoom scale, 1.0 = 100% (for zoom)"),
+          mode: z
+            .enum(["inline", "fullscreen"])
+            .optional()
+            .describe(
+              "Display mode (for display_mode): fullscreen opens the full reader in Codex's right panel; inline returns it to the conversation",
+            ),
           annotations: z
             .array(z.record(z.string(), z.any()))
             .optional()
@@ -2522,6 +2571,7 @@ Example — add a signature image and a stamp, then screenshot to verify:
           query,
           matchIndex,
           scale,
+          mode,
           annotations,
           ids,
           color,
@@ -2545,6 +2595,7 @@ Example — add a signature image and a stamp, then screenshot to verify:
                   query,
                   matchIndex,
                   scale,
+                  mode,
                   annotations,
                   ids,
                   color,
@@ -2727,11 +2778,13 @@ Example — add a signature image and a stamp, then screenshot to verify:
       {
         title: "Submit Viewer State",
         description:
-          "Submit a viewer-state snapshot for a get_viewer_state request (used by viewer). The model should NOT call this tool directly.",
+          "Submit a viewer-state snapshot for a get_viewer_state or display_mode request (used by viewer). The model should NOT call this tool directly.",
         inputSchema: z.object({
           requestId: z
             .string()
-            .describe("The request ID from the get_viewer_state command"),
+            .describe(
+              "The request ID from the get_viewer_state or display_mode command",
+            ),
           state: z
             .string()
             .optional()
@@ -2739,7 +2792,9 @@ Example — add a signature image and a stamp, then screenshot to verify:
           error: z
             .string()
             .optional()
-            .describe("Error message if the viewer failed to read state"),
+            .describe(
+              "Error message if the viewer failed to read state or change display mode",
+            ),
         }),
         _meta: { ui: { visibility: ["app"] } },
       },

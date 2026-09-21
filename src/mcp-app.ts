@@ -3734,23 +3734,29 @@ function resetZoom() {
   });
 }
 
-async function toggleFullscreen() {
+async function setReaderDisplayMode(mode: "inline" | "fullscreen") {
   const ctx = app.getHostContext();
-  if (!ctx?.availableDisplayModes?.includes("fullscreen")) {
-    log.info("Fullscreen not available");
-    return;
+  if (!ctx?.availableDisplayModes?.includes(mode)) {
+    throw new Error("当前客户端不支持此阅读器显示方式");
   }
+
+  const result = await app.requestDisplayMode({ mode });
+  if (result.mode !== mode) {
+    throw new Error(`客户端未切换阅读器显示方式（仍为 ${result.mode}）`);
+  }
+  handleHostContextChanged({ displayMode: result.mode });
+}
+
+async function toggleFullscreen() {
 
   const newMode = currentDisplayMode === "fullscreen" ? "inline" : "fullscreen";
   log.info("Requesting display mode:", newMode);
 
   try {
-    const result = await app.requestDisplayMode({ mode: newMode });
-    log.info("Display mode result:", result);
-    currentDisplayMode = result.mode as "inline" | "fullscreen";
-    updateFullscreenButton();
+    await setReaderDisplayMode(newMode);
   } catch (err) {
     log.error("Failed to change display mode:", err);
+    selectionStatusEl.textContent = err instanceof Error ? err.message : String(err);
   }
 }
 
@@ -3762,9 +3768,10 @@ function updateFullscreenButton() {
   ) as HTMLElement;
   if (expandIcon) expandIcon.style.display = isFs ? "none" : "";
   if (collapseIcon) collapseIcon.style.display = isFs ? "" : "none";
-  fullscreenBtn.title = isFs
-    ? "Exit fullscreen (Esc)"
-    : "Toggle fullscreen (⌘Enter)";
+  const label = isFs ? "收起阅读器" : "展开阅读器";
+  fullscreenBtn.querySelector(".display-mode-label")!.textContent = label;
+  fullscreenBtn.title = `${label}（Ctrl/Cmd+Enter）`;
+  fullscreenBtn.setAttribute("aria-label", label);
 }
 
 // Event listeners
@@ -4949,6 +4956,20 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
         if (cmd.scale >= 0.5 && cmd.scale <= 3.0) {
           scale = cmd.scale;
           renderPage();
+        }
+        break;
+      case "display_mode":
+        try {
+          await setReaderDisplayMode(cmd.mode);
+          await handleGetViewerState(cmd.requestId);
+        } catch (err) {
+          await app.callServerTool({
+            name: "submit_viewer_state",
+            arguments: {
+              requestId: cmd.requestId,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
         }
         break;
       case "add_annotations":

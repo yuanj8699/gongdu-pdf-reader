@@ -3,7 +3,7 @@ import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/
 
 const iframe = document.querySelector<HTMLIFrameElement>("iframe")!;
 const initialResult = await fetch(`/initial${window.location.search}`).then((response) => response.json());
-const observations = { contexts: [] as unknown[], messages: [] as unknown[], downloads: [] as unknown[], ready: false, rejectNextMessage: false };
+const observations = { contexts: [] as unknown[], messages: [] as unknown[], downloads: [] as unknown[], displayModes: [] as string[], ready: false, rejectNextMessage: false, rejectNextDisplayMode: false };
 Object.assign(window, { observations });
 const bridge = new AppBridge(null, { name: "Reader smoke-test host", version: "1.0.0" }, {
   serverTools: {}, logging: {}, downloadFile: {},
@@ -33,7 +33,15 @@ bridge.onmessage = async (params) => {
   return {};
 };
 bridge.ondownloadfile = async (params) => { observations.downloads.push(params); return {}; };
-bridge.onrequestdisplaymode = async ({ mode }) => ({ mode });
+bridge.onrequestdisplaymode = async ({ mode }) => {
+  observations.displayModes.push(mode);
+  if (observations.rejectNextDisplayMode) {
+    observations.rejectNextDisplayMode = false;
+    return { mode: "inline" };
+  }
+  bridge.setHostContext({ displayMode: mode });
+  return { mode };
+};
 bridge.oninitialized = async () => {
   await bridge.sendToolInput({ arguments: { url: initialResult.structuredContent.url } });
   await bridge.sendToolResult(initialResult);
