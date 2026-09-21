@@ -34,7 +34,7 @@ export async function startStreamableHTTPServer(
 ): Promise<void> {
   const port = parseInt(process.env.PORT ?? "3001", 10);
 
-  const app = createMcpExpressApp({ host: "0.0.0.0" });
+  const app = createMcpExpressApp({ host: "127.0.0.1" });
   app.use(cors());
 
   app.all("/mcp", async (req: Request, res: Response) => {
@@ -63,7 +63,7 @@ export async function startStreamableHTTPServer(
     }
   });
 
-  const httpServer = app.listen(port, (err) => {
+  const httpServer = app.listen(port, "127.0.0.1", (err) => {
     if (err) {
       console.error("Failed to start server:", err);
       process.exit(1);
@@ -173,9 +173,9 @@ async function main() {
   console.error(`[pdf-server] Ready (${urls.length} URL(s) configured)`);
 
   if (stdio) {
-    // stdio → client is local (e.g. Claude Desktop), roots are safe
+    // Only explicit files/directories are allowed unless client roots are opted in.
     await startStdioServer(() =>
-      createServer({ enableInteract: true, useClientRoots: true, debug }),
+      createServer({ enableInteract: true, useClientRoots, debug }),
     );
   } else {
     // HTTP → client is remote, only honour roots with explicit opt-in

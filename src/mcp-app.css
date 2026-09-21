@@ -10,7 +10,7 @@
   /* Text colors */
   --text000: light-dark(#1a1a1a, #f0f0f0);
   --text100: light-dark(#666666, #aaaaaa);
-  --text200: light-dark(#999999, #888888);
+  --text200: light-dark(#666666, #b5b5b5);
 
   /* Shadows */
   --shadow-page-color: light-dark(rgba(0 0 0 / 0.15), rgba(0 0 0 / 0.4));
@@ -116,6 +116,45 @@ body {
   overflow: hidden;
   display: flex;
   align-items: center;
+  gap: 0.6rem;
+}
+
+.reader-action {
+  font: inherit;
+  font-size: 0.82rem;
+  white-space: nowrap;
+  min-height: 36px;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--bg300);
+  border-radius: 5px;
+  background: var(--bg000);
+  color: var(--text000);
+  cursor: pointer;
+}
+.reader-action:hover { background: var(--bg200); }
+.reader-action:focus-visible, button:focus-visible {
+  outline: 2px solid light-dark(#235c4a, #7bd3af);
+  outline-offset: 2px;
+}
+.reader-primary { background: light-dark(#235c4a, #93dabd); color: light-dark(#fff, #102d22); border-color: transparent; }
+.reader-primary:hover { background: light-dark(#194936, #b2e7cf); }
+.reader-action:disabled { opacity: 0.55; cursor: default; }
+.selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.65rem;
+  border-bottom: 1px solid var(--bg200);
+  background: var(--bg000);
+  flex-shrink: 0;
+}
+#selection-status { flex: 1; min-width: 0; font-size: 0.78rem; color: var(--text100); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 480px) {
+  .selection-bar { flex-wrap: wrap; }
+  #selection-status { min-width: 140px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
 .pdf-title {

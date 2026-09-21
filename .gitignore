@@ -1,2 +1,11 @@
 dist/
 *.jsonl
+node_modules/
+.tmp/
+test-results/
+playwright-report/
+tests/.artifacts/
+*.log
+.env
+.env.*
+!.env.example

@@ -13,6 +13,7 @@
 import { randomUUID } from "crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import {
   registerAppResource,
   registerAppTool,
@@ -42,27 +43,17 @@ import type { PDFDocumentProxy } from "pdfjs-dist/types/src/display/api.js";
  * PDF Standard-14 fonts from CDN. Used by both server and viewer so we
  * declare a single well-known origin in CSP connectDomains.
  *
- * pdf.js in Node defaults to NodeStandardFontDataFactory (fs.readFile) which
- * can't fetch URLs, so we pass {@link FetchStandardFontDataFactory} alongside.
- * The browser viewer uses the DOM factory by default and just needs the URL.
+ * The browser viewer uses the CDN. The Node server reads the installed fonts
+ * locally, without a second network request or a custom font factory.
  */
 export const STANDARD_FONT_DATA_URL = `https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/standard_fonts/`;
 const STANDARD_FONT_ORIGIN = "https://unpkg.com";
 
-/** pdf.js font factory that uses fetch() instead of fs.readFile. */
-class FetchStandardFontDataFactory {
-  baseUrl: string | null;
-  constructor({ baseUrl = null }: { baseUrl?: string | null }) {
-    this.baseUrl = baseUrl;
-  }
-  async fetch({ filename }: { filename: string }): Promise<Uint8Array> {
-    if (!this.baseUrl) throw new Error("standardFontDataUrl not provided");
-    const url = `${this.baseUrl}${filename}`;
-    const res = await globalThis.fetch(url);
-    if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
-    return new Uint8Array(await res.arrayBuffer());
-  }
-}
+// PDF.js requires a trailing forward slash, including on Windows.
+const STANDARD_FONT_DATA_PATH = path.join(
+  path.dirname(createRequire(import.meta.url).resolve("pdfjs-dist/package.json")),
+  "standard_fonts/",
+).replace(/\\/g, "/");
 import { z } from "zod";
 
 // =============================================================================
@@ -1046,8 +1037,7 @@ async function probeFormFields(
         disableAutoFetch: true,
         disableStream: true,
         rangeChunkSize: 64 * 1024,
-        standardFontDataUrl: STANDARD_FONT_DATA_URL,
-        StandardFontDataFactory: FetchStandardFontDataFactory,
+        standardFontDataUrl: STANDARD_FONT_DATA_PATH,
         verbosity: VerbosityLevel.ERRORS,
       }).promise,
     );
@@ -2928,7 +2918,9 @@ Example — add a signature image and a stamp, then screenshot to verify:
                   //   - creates FontFace('name', 'url(...)') → font-src
                   // resourceDomains maps to font-src; we need both.
                   connectDomains: [STANDARD_FONT_ORIGIN],
-                  resourceDomains: [STANDARD_FONT_ORIGIN],
+                  // The bundled PDF.js worker is a data: module launched via
+                  // a blob: wrapper. Strict MCP iframe policies need both.
+                  resourceDomains: [STANDARD_FONT_ORIGIN, "data:", "blob:"],
                 },
               },
             },

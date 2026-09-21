@@ -1,13 +1,8 @@
 {
-  "name": "@modelcontextprotocol/server-pdf",
+  "name": "gongdu-pdf-reader",
   "version": "2.0.0",
   "type": "module",
   "description": "MCP server for loading and extracting text from PDF files with chunked pagination and interactive viewer",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/modelcontextprotocol/ext-apps.git",
-    "directory": "examples/pdf-server"
-  },
   "license": "MIT",
   "main": "dist/server.js",
   "files": [
@@ -21,11 +16,12 @@
     "start": "cross-env NODE_ENV=development npm run build && npm run serve",
     "start:stdio": "cross-env NODE_ENV=development npm run build 1>&2 && npm run serve:stdio",
     "dev": "cross-env NODE_ENV=development concurrently \"npm run watch\" \"npm run serve\"",
-    "prepublishOnly": "npm run build",
-    "build:mcpb": "npm run build && node build-mcpb.mjs"
+    "test": "bun test src/pdf-annotations.test.ts server.test.ts",
+    "test:reader": "bun scripts/test-reader-smoke.ts",
+    "test:stdio": "node scripts/test-mcp-stdio.mjs"
   },
   "dependencies": {
-    "@cantoo/pdf-lib": "^2.6.5",
+    "@cantoo/pdf-lib": "2.6.5",
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/express": "2.0.0",
     "@modelcontextprotocol/ext-apps": "^2.0.0",
@@ -33,13 +29,16 @@
     "@modelcontextprotocol/server": "2.0.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
-    "pdfjs-dist": "^5.0.0",
+    "pdfjs-dist": "5.4.530",
     "zod": "^4.2.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/bun": "^1.4.2",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.0",
     "@types/node": "22.10.0",
+    "bun": "^1.4.2",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
     "typescript": "^5.9.3",
@@ -55,5 +54,6 @@
   },
   "bin": {
     "mcp-pdf-server": "dist/index.js"
-  }
+  },
+  "private": true
 }

@@ -1,16 +1,16 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PDF Viewer</title>
+    <title>共读 · PDF 阅读器</title>
   </head>
   <body>
     <div class="main">
       <!-- Loading State -->
       <div id="loading" class="loading">
         <div class="spinner"></div>
-        <p id="loading-text">Loading PDF...</p>
+        <p id="loading-text">正在打开 PDF…</p>
       </div>
 
       <!-- Error State -->
@@ -34,6 +34,7 @@
         <!-- Toolbar -->
         <div class="toolbar">
           <div class="toolbar-left">
+            <button id="outline-toggle" class="reader-action" aria-label="展开或收起目录" aria-controls="reader-navigation">目录</button>
             <span id="pdf-title" class="pdf-title">Document</span>
             <div id="loading-indicator" class="loading-indicator" style="display: none"
                  title="Loading pages...">
@@ -110,6 +111,10 @@
             </button>
           </div>
         </div>
+        <div class="selection-bar">
+          <span id="selection-status" role="status" aria-live="polite">选中原文，向小吉提问</span>
+          <button id="explain-selection-btn" class="reader-action reader-primary" disabled>解释选中内容</button>
+        </div>
         <!-- Search bar below toolbar, right-aligned -->
         <div id="search-bar" class="search-bar" style="display: none">
           <input
@@ -144,7 +149,8 @@
         </div>
 
         <!-- Canvas + Annotation Panel Row -->
-        <div class="viewer-body">
+        <div class="viewer-body reader-workspace">
+          <aside id="reader-navigation" aria-label="文档导航"></aside>
           <!-- Single Page Canvas Container -->
           <div class="canvas-container">
             <div class="page-wrapper">

@@ -5,7 +5,7 @@ import path from "node:path";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { PDFDocument } from "@cantoo/pdf-lib";
-import { makeRandomJpeg } from "../../tests/helpers/range-counting-server";
+import { makeRandomJpeg } from "./tests/helpers/range-counting-server";
 import {
   createPdfCache,
   createServer,
@@ -511,7 +511,7 @@ describe("extractFormSchema field-tree handling", () => {
 
   it("skips container nodes and finds leaf fields (W-9 style)", async () => {
     const bytes = fs.readFileSync(
-      path.join(__dirname, "../../tests/helpers/assets/fw9.pdf"),
+      path.join(__dirname, "tests/helpers/assets/fw9.pdf"),
     );
     const doc = await getDocument({ data: new Uint8Array(bytes) }).promise;
     try {
@@ -684,7 +684,7 @@ describe("validateUrl with MCP roots (allowedLocalDirs)", () => {
     try {
       fs.mkdirSync(realDir);
       fs.writeFileSync(testFile, "hello");
-      fs.symlinkSync(realDir, linkDir);
+      fs.symlinkSync(realDir, linkDir, process.platform === "win32" ? "junction" : "dir");
 
       // Allow the REAL directory
       allowedLocalDirs.add(realDir);
@@ -709,7 +709,7 @@ describe("validateUrl with MCP roots (allowedLocalDirs)", () => {
     try {
       fs.mkdirSync(realDir);
       fs.writeFileSync(testFile, "hello");
-      fs.symlinkSync(realDir, linkDir);
+      fs.symlinkSync(realDir, linkDir, process.platform === "win32" ? "junction" : "dir");
 
       // Allow the SYMLINK directory
       allowedLocalDirs.add(linkDir);

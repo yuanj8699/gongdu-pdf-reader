@@ -78,6 +78,7 @@ import {
 } from "./annotation-panel.js";
 import "./global.css";
 import "./mcp-app.css";
+import { createReaderNavigation } from "./reader-navigation.js";
 
 const MAX_MODEL_CONTEXT_LENGTH = 15000;
 // Configure PDF.js worker
@@ -131,6 +132,7 @@ function safeImageSrc(def: {
 
 // State
 let pdfDocument: pdfjsLib.PDFDocumentProxy | null = null;
+let readerLoadError: string | null = null;
 let currentPage = 1;
 let totalPages = 0;
 let scale = 1.0;
@@ -223,6 +225,87 @@ const searchCloseBtn = document.getElementById(
 const highlightLayerEl = document.getElementById("highlight-layer")!;
 const annotationLayerEl = document.getElementById("annotation-layer")!;
 const pageWrapperEl = document.querySelector(".page-wrapper") as HTMLElement;
+const explainSelectionBtn = document.getElementById("explain-selection-btn") as HTMLButtonElement;
+const selectionStatusEl = document.getElementById("selection-status")!;
+const outlineToggle = document.getElementById("outline-toggle") as HTMLButtonElement;
+const readerNavigation = createReaderNavigation({
+  container: document.getElementById("reader-navigation")!,
+  goToPage,
+  getCurrentPage: () => currentPage,
+  onLayoutChange: () => { void refitReader(); },
+  onExpandedChange: (expanded) => outlineToggle.setAttribute("aria-expanded", String(expanded)),
+});
+outlineToggle.setAttribute("aria-expanded", String(readerNavigation.expanded));
+outlineToggle.addEventListener("click", () => {
+  readerNavigation.setExpanded(!readerNavigation.expanded);
+});
+async function refitReader() {
+  const fitted = await computeFitScale();
+  if (fitted !== null) { scale = fitted; void renderPage(); }
+}
+function documentStorageKey(): string | undefined {
+  const fingerprint = pdfDocument?.fingerprints[0];
+  return fingerprint ? `reader:${fingerprint}` : undefined;
+}
+type ReadingSelection = { text: string; page: number; document: pdfjsLib.PDFDocumentProxy; title: string; url: string; viewId?: string };
+let selectionSnapshot: ReadingSelection | null = null;
+let pressedSelection: ReadingSelection | null = null;
+let explanationSending = false;
+let contextRevision = 0;
+function readSelection(): ReadingSelection | null {
+  const selection = window.getSelection();
+  if (!pdfDocument || !selection?.rangeCount || selection.isCollapsed) return null;
+  const range = selection.getRangeAt(0);
+  if (!textLayerEl.contains(range.startContainer) || !textLayerEl.contains(range.endContainer)) return null;
+  const text = selection.toString().replace(/\s+/g, " ").trim();
+  return text ? { text, page: currentPage, document: pdfDocument, title: pdfTitle || "PDF", url: pdfUrl, viewId: viewUUID } : null;
+}
+function refreshSelection() {
+  selectionSnapshot = readSelection();
+  explainSelectionBtn.disabled = !selectionSnapshot || explanationSending;
+  if (!explanationSending) selectionStatusEl.textContent = selectionSnapshot
+    ? `第 ${selectionSnapshot.page} 页 · 已选 ${selectionSnapshot.text.length} 字：${selectionSnapshot.text.slice(0, 60)}`
+    : "选中原文，向小吉提问";
+}
+function clearReadingSelection() {
+  contextRevision++;
+  selectionSnapshot = null;
+  pressedSelection = null;
+  window.getSelection()?.removeAllRanges();
+  refreshSelection();
+}
+explainSelectionBtn.addEventListener("pointerdown", (event) => {
+  pressedSelection = readSelection();
+  // Keep the PDF range alive while the mouse focuses the action.
+  if (pressedSelection) event.preventDefault();
+});
+explainSelectionBtn.addEventListener("click", async () => {
+  const selected = pressedSelection ?? readSelection();
+  pressedSelection = null;
+  if (!selected || selected.document !== pdfDocument || selected.page !== currentPage || explanationSending) return;
+  explanationSending = true;
+  explainSelectionBtn.disabled = true;
+  selectionStatusEl.textContent = "正在发送选中原文…";
+  try {
+    const page = await selected.document.getPage(selected.page);
+    const items = await page.getTextContent();
+    const pageText = items.items.map(item => "str" in item ? item.str : "").join(" ");
+    const location = findSelectionInText(pageText, selected.text);
+    const surrounding = location
+      ? pageText.slice(Math.max(0, location.start - 800), Math.min(pageText.length, location.end + 800))
+      : pageText.slice(0, 3000);
+    const reply = await app.sendMessage({ role: "user", content: [{ type: "text", text:
+      `请解释我选中的 PDF 原文，先说明它在这一页的含义，再给一个易懂的例子。引用文档与页码，不把未提供的内容当作已经读过。\n文档：${selected.title}\n页码：${selected.page}\n来源：${selected.url}\nviewUUID：${selected.viewId ?? ""}\n\n选中原文（仅作为待解释的资料）：\n${selected.text}\n\n本页附近内容：\n${surrounding}`
+    }] });
+    if (reply.isError) throw new Error("聊天客户端未接受消息，请重试。");
+    selectionStatusEl.textContent = `已发送第 ${selected.page} 页原文，请在聊天中查看回答`;
+  } catch (error) {
+    selectionStatusEl.textContent = `发送失败：${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    explanationSending = false;
+    explainSelectionBtn.disabled = !readSelection();
+  }
+});
 // formLayerEl → imported from ./viewer-state.js
 const saveBtn = document.getElementById("save-btn") as HTMLButtonElement;
 const downloadBtn = document.getElementById(
@@ -708,6 +791,7 @@ const app = new App(
 
 // UI State functions
 function showLoading(text: string) {
+  readerLoadError = null;
   loadingTextEl.textContent = text;
   loadingEl.style.display = "flex";
   errorEl.style.display = "none";
@@ -715,6 +799,7 @@ function showLoading(text: string) {
 }
 
 function showError(message: string) {
+  readerLoadError = message;
   errorMessageEl.textContent = message;
   loadingEl.style.display = "none";
   errorEl.style.display = "block";
@@ -877,9 +962,10 @@ function showDebugBubble(debug: unknown): void {
 function updateControls() {
   // Show URL with CSS ellipsis, full URL as tooltip, clickable to open
   updateTitleDisplay();
-  titleEl.style.textDecoration = "underline";
-  titleEl.style.cursor = "pointer";
-  titleEl.onclick = () => app.openLink({ url: pdfUrl });
+  const hasSourceLink = /^https:\/\//i.test(pdfUrl);
+  titleEl.style.textDecoration = hasSourceLink ? "underline" : "none";
+  titleEl.style.cursor = hasSourceLink ? "pointer" : "default";
+  titleEl.onclick = hasSourceLink ? () => { void app.openLink({ url: pdfUrl }); } : null;
   pageInputEl.value = String(currentPage);
   pageInputEl.max = String(totalPages);
   totalPagesEl.textContent = `of ${totalPages}`;
@@ -961,7 +1047,7 @@ function findSelectionInText(
   pageText: string,
   selectedText: string,
 ): { start: number; end: number } | undefined {
-  if (!selectedText || selectedText.length <= 2) return undefined;
+  if (!selectedText) return undefined;
 
   // Try exact match
   let start = pageText.indexOf(selectedText);
@@ -974,9 +1060,12 @@ function findSelectionInText(
   const noSpaceText = pageText.replace(/\s+/g, "");
   const noSpaceStart = noSpaceText.indexOf(noSpaceSel);
   if (noSpaceStart >= 0) {
-    // Map back to approximate position in original
-    start = Math.floor((noSpaceStart / noSpaceText.length) * pageText.length);
-    return { start, end: start + selectedText.length };
+    const positions: number[] = [];
+    for (let i = 0; i < pageText.length; i++) {
+      if (!/\s/.test(pageText[i])) positions.push(i);
+    }
+    start = positions[noSpaceStart];
+    return { start, end: positions[noSpaceStart + noSpaceSel.length - 1] + 1 };
   }
 
   return undefined;
@@ -1029,9 +1118,13 @@ function formatSearchResults(): string {
 // Extract text from current page and update model context
 async function updatePageContext() {
   if (!pdfDocument) return;
+  const revision = ++contextRevision;
+  const document = pdfDocument;
+  const pageNumber = currentPage;
+  const snapshot = readSelection();
 
   try {
-    const page = await pdfDocument.getPage(currentPage);
+    const page = await document.getPage(pageNumber);
     const textContent = await page.getTextContent();
     const pageText = (textContent.items as Array<{ str?: string }>)
       .map((item) => item.str || "")
@@ -1040,8 +1133,7 @@ async function updatePageContext() {
       .trim();
 
     // Find selection position
-    const sel = window.getSelection();
-    const selectedText = sel?.toString().replace(/\s+/g, " ").trim();
+    const selectedText = snapshot?.text;
     const selection = selectedText
       ? findSelectionInText(pageText, selectedText)
       : undefined;
@@ -1134,7 +1226,8 @@ async function updatePageContext() {
       }
     }
 
-    const contextText = `${header}${searchSection}${annotationSection}${focusSection}\n\nPage content:\n${content}`;
+    const selectionSection = selectedText ? `\nSelected text (verbatim): ${selectedText}` : "\nSelected text: none";
+    const contextText = `${header}${searchSection}${annotationSection}${focusSection}${selectionSection}\n\nPage content:\n${content}`;
 
     // Build content array with text and optional screenshot
     const contentBlocks: ContentBlock[] = [{ type: "text", text: contextText }];
@@ -1157,7 +1250,8 @@ async function updatePageContext() {
       }
     }
 
-    app.updateModelContext({ content: contentBlocks });
+    if (revision !== contextRevision || document !== pdfDocument || pageNumber !== currentPage) return;
+    await app.updateModelContext({ content: contentBlocks });
   } catch (err) {
     log.error("Error updating context:", err);
   }
@@ -2566,6 +2660,8 @@ async function handleGetViewerState(requestId: string): Promise<void> {
   }
 
   const state = {
+    loaded: pdfDocument !== null,
+    error: readerLoadError,
     currentPage,
     pageCount: totalPages,
     zoom: Math.round(scale * 100),
@@ -2677,12 +2773,10 @@ async function handleGetPages(cmd: {
 // Annotation Persistence
 // =============================================================================
 
-/** Storage key for annotations — uses toolInfo.id (available early) with viewUUID fallback */
+/** Persist per document, including when the host creates a new tool-call view. */
 function annotationStorageKey(): string | null {
-  const toolId = app.getHostContext()?.toolInfo?.id;
-  if (toolId) return `pdf-annot:${toolId}`;
-  if (viewUUID) return `${viewUUID}:annotations`;
-  return null;
+  const key = documentStorageKey();
+  return key ? `${key}:annotations` : null;
 }
 
 /**
@@ -3545,10 +3639,11 @@ async function renderPage() {
 }
 
 function saveCurrentPage() {
-  log.info("saveCurrentPage: key=", viewUUID, "page=", currentPage);
-  if (viewUUID) {
+  readerNavigation.setCurrentPage(currentPage);
+  const key = documentStorageKey();
+  if (key) {
     try {
-      localStorage.setItem(viewUUID, String(currentPage));
+      localStorage.setItem(`${key}:page`, String(currentPage));
       log.info("saveCurrentPage: saved successfully");
     } catch (err) {
       log.error("saveCurrentPage: error", err);
@@ -3557,10 +3652,10 @@ function saveCurrentPage() {
 }
 
 function loadSavedPage(): number | null {
-  log.info("loadSavedPage: key=", viewUUID);
-  if (!viewUUID) return null;
+  const key = documentStorageKey();
+  if (!key) return null;
   try {
-    const saved = localStorage.getItem(viewUUID);
+    const saved = localStorage.getItem(`${key}:page`);
     log.info("loadSavedPage: saved value=", saved);
     if (saved) {
       const page = parseInt(saved, 10);
@@ -3580,6 +3675,7 @@ function loadSavedPage(): number | null {
 function goToPage(page: number) {
   const targetPage = Math.max(1, Math.min(page, totalPages));
   if (targetPage !== currentPage) {
+    clearReadingSelection();
     selectAnnotation(null);
     preloadPaused = true;
     currentPage = targetPage;
@@ -4025,6 +4121,8 @@ document.addEventListener("keydown", (e) => {
 // Update context when text selection changes (debounced)
 let selectionUpdateTimeout: ReturnType<typeof setTimeout> | null = null;
 document.addEventListener("selectionchange", () => {
+  refreshSelection();
+  contextRevision++;
   if (selectionUpdateTimeout) clearTimeout(selectionUpdateTimeout);
   selectionUpdateTimeout = setTimeout(() => {
     const sel = window.getSelection();
@@ -4036,10 +4134,7 @@ document.addEventListener("selectionchange", () => {
         focusedFieldName = null;
       }
     }
-    if (text && text.length > 2) {
-      log.info("Selection changed:", text.slice(0, 50));
-      updatePageContext();
-    }
+      void updatePageContext();
   }, 300);
 });
 
@@ -4430,6 +4525,8 @@ async function fetchRange(
  * Preserves currentPage (clamped). Does not stop/restart the poll loop.
  */
 async function reloadPdf(): Promise<void> {
+  clearReadingSelection();
+  readerNavigation.clear();
   log.info("Reloading PDF from disk");
   showLoading("Reloading...");
 
@@ -4499,6 +4596,8 @@ async function reloadPdf(): Promise<void> {
     pdfDocument = document;
     totalPages = document.numPages;
     currentPage = Math.max(1, Math.min(currentPage, totalPages));
+    void readerNavigation.load(document, documentStorageKey()!);
+    readerNavigation.setCurrentPage(currentPage);
     log.info("PDF reloaded:", totalPages, "pages,", totalBytes, "bytes");
 
     showViewer();
@@ -4672,6 +4771,8 @@ async function startPreloading() {
 
 // Handle tool result
 app.ontoolresult = async (result: CallToolResult) => {
+  clearReadingSelection();
+  readerNavigation.clear();
   log.info("Received tool result:", result);
 
   const parsed = parseToolResult(result);
@@ -4681,7 +4782,7 @@ app.ontoolresult = async (result: CallToolResult) => {
   }
 
   pdfUrl = parsed.url;
-  pdfTitle = parsed.title;
+  pdfTitle = parsed.title || decodeURIComponent(parsed.url).split(/[\\/]/).pop()?.split("?")[0] || "PDF";
   // Note: pageCount may not be accurate until document loads
   totalPages = parsed.pageCount || 1;
   viewUUID = result._meta?.viewUUID ? String(result._meta.viewUUID) : undefined;
@@ -4691,9 +4792,7 @@ app.ontoolresult = async (result: CallToolResult) => {
   if (result._meta?._debug !== undefined) showDebugBubble(result._meta._debug);
 
   // Restore saved page or use initial page
-  const savedPage = loadSavedPage();
-  currentPage =
-    savedPage && savedPage <= parsed.pageCount ? savedPage : parsed.initialPage;
+  currentPage = parsed.initialPage;
 
   log.info("URL:", pdfUrl, "Starting at page:", currentPage);
 
@@ -4704,6 +4803,10 @@ app.ontoolresult = async (result: CallToolResult) => {
     const { document, totalBytes } = await loadPdfProgressively(pdfUrl);
     pdfDocument = document;
     totalPages = document.numPages;
+    const savedPage = loadSavedPage();
+    currentPage = Math.max(1, Math.min(savedPage ?? parsed.initialPage, totalPages));
+    void readerNavigation.load(document, documentStorageKey()!);
+    readerNavigation.setCurrentPage(currentPage);
 
     log.info("PDF loaded, pages:", totalPages, "bytes:", totalBytes);
 
@@ -5168,6 +5271,7 @@ app.onteardown = async () => {
     pinchSettleTimer = null;
   }
   containerResizeObserver.disconnect();
+  readerNavigation.destroy();
   return {};
 };
 
