@@ -172,10 +172,16 @@ async function main() {
 
   console.error(`[pdf-server] Ready (${urls.length} URL(s) configured)`);
 
+  // A sidebar click has no tool arguments: open the first configured PDF.
+  // Directory registrations are access scopes, not documents to render.
+  const defaultPdfUrl = urls.find((url) =>
+    !isFileUrl(url) || allowedLocalFiles.has(path.resolve(fileUrlToPath(url))),
+  ) ?? DEFAULT_PDF;
+
   if (stdio) {
     // Only explicit files/directories are allowed unless client roots are opted in.
     await startStdioServer(() =>
-      createServer({ enableInteract: true, useClientRoots, debug }),
+      createServer({ enableInteract: true, useClientRoots, debug, defaultPdfUrl }),
     );
   } else {
     // HTTP → client is remote, only honour roots with explicit opt-in
@@ -186,7 +192,7 @@ async function main() {
       );
     }
     await startStreamableHTTPServer(() =>
-      createServer({ useClientRoots, enableInteract, debug }),
+      createServer({ useClientRoots, enableInteract, debug, defaultPdfUrl }),
     );
   }
 }

@@ -1216,6 +1216,9 @@ export async function extractFormSchema(
 // =============================================================================
 
 export interface CreateServerOptions {
+  /** PDF opened when the sidebar entrypoint is clicked without arguments. */
+  defaultPdfUrl?: string;
+
   /**
    * Enable the `interact` tool and related command-queue infrastructure
    * (in-memory command queue, `poll_pdf_commands`, `submit_page_data`).
@@ -1442,7 +1445,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     server,
     "display_pdf",
     {
-      title: "Display PDF",
+      title: "PDF 阅读器",
       description: disableInteract
         ? `Show and render a PDF in a read-only viewer.
 
@@ -1466,7 +1469,7 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
       inputSchema: z.object({
         url: z
           .string()
-          .default(DEFAULT_PDF)
+          .default(options.defaultPdfUrl ?? DEFAULT_PDF)
           .describe("PDF URL or local file path"),
         page: z.number().min(1).default(1).describe("Initial page"),
         ...(disableInteract
@@ -1520,7 +1523,10 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
             "Form fields with bounding boxes in model coordinates (top-left origin)",
           ),
       }),
-      _meta: { ui: { resourceUri: RESOURCE_URI } },
+      _meta: {
+        ui: { resourceUri: RESOURCE_URI },
+        "openai/ui": { entrypoints: [{ type: "thread" }] },
+      },
     },
     async ({ url, page, elicit_form_inputs }): Promise<CallToolResult> => {
       const normalized = isArxivUrl(url) ? normalizeArxivUrl(url) : url;
