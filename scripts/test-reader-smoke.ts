@@ -130,8 +130,11 @@ try {
   // console error contaminate the positive workflow's browser-error assertion.
   const cspProbe = await browser.newPage();
   const cspErrors: string[] = [];
+  const compactWorkerError = (text: string) => text
+    .replace(/data:text\/javascript;base64,[A-Za-z0-9+/=]+/g, "data:text/javascript;base64,<bundled-worker>")
+    .slice(0, 2500);
   cspProbe.on("console", (message) => {
-    if (message.type() === "error") cspErrors.push(message.text());
+    if (message.type() === "error") cspErrors.push(compactWorkerError(message.text()));
   });
   try {
     reproduceMissingWorkerSchemes = true;
@@ -142,7 +145,7 @@ try {
     assert.ok(cspErrors.some((message) => /Content Security Policy|script-src/i.test(message) && /data:/i.test(message)),
       `Expected the data: worker import to be blocked by CSP: ${cspErrors.join("\n")}`);
     await fs.writeFile(path.join(artifacts, "reader-worker-csp-regression.json"), JSON.stringify({
-      error: await failedReader.locator("#error-message").innerText(),
+      error: compactWorkerError(await failedReader.locator("#error-message").innerText()),
       consoleErrors: cspErrors,
     }, null, 2));
     check("original resource policy blocks the inlined worker import and shows a load error");
