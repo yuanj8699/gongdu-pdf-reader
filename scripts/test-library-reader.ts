@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { chromium, expect } from "@playwright/test";
-import { PDFDocument, StandardFonts } from "@cantoo/pdf-lib";
+import { PDFDocument, StandardFonts, PDFName, degrees } from "@cantoo/pdf-lib";
 import { allowedLocalFiles, createServer, createLibrary, RESOURCE_URI, stopFileWatch } from "../server";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -133,9 +133,52 @@ try {
   for (const value of [selected, asset.documentId, asset.versionId, asset.assetId, "页码：3"]) assert.ok(message.includes(value), message);
   check("explicit selection question includes immutable document/version/asset identity and page");
 
+  const questionContext = JSON.parse(message.slice(message.indexOf('{"schemaVersion"')));
+  const activeView = questionContext.viewUUID;
+  await expect.poll(() => page.evaluate(() => (window as any).observations.contexts.at(-1)?.structuredContent?.readingContext?.selection?.text)).toBe(selected);
+  const automaticContext = await page.evaluate(() => (window as any).observations.contexts.at(-1).structuredContent.readingContext);
+  const live = await client.callTool({ name: "interact", arguments: { viewUUID: activeView, action: "get_viewer_state" } });
+  assert.ok(!live.isError, JSON.stringify(live));
+  const liveState = JSON.parse((live.content as any[])[0].text);
+  assert.deepEqual(liveState.readingContext, questionContext);
+  assert.deepEqual(automaticContext, questionContext);
+  assert.ok(questionContext.location.rects.length > 0);
+  const target = { viewUUID: activeView, documentId: asset.documentId, versionId: asset.versionId, assetId: asset.assetId };
+  for (const args of [
+    { target: { ...target, versionId: crypto.randomUUID() }, location: { format: "pdf", pageNumber: 2 } },
+    { target, location: { format: "pdf", pageNumber: 4 } },
+  ]) {
+    const rejected = await client.callTool({ name: "reader_navigate", arguments: args });
+    assert.ok(rejected.isError, JSON.stringify(rejected));
+    await expect(view.locator("#page-input")).toHaveValue("3");
+  }
+  const navigated = await client.callTool({ name: "reader_navigate", arguments: { target, location: { format: "pdf", pageNumber: 2 } } });
+  assert.ok(!navigated.isError, JSON.stringify(navigated));
+  assert.equal(navigated.structuredContent?.currentPage, 2);
+  assert.equal((navigated.structuredContent?.readingContext as any).selection, null);
+  await expect(view.locator("#text-layer")).toContainText("Beta unique");
+  await client.callTool({ name: "reader_navigate", arguments: { target, location: { format: "pdf", pageNumber: 3 } } });
+  await expect(view.locator("#text-layer")).toContainText("Gamma unique");
+  check("automatic context, explicit question and live state share one snapshot; version-bound navigation acknowledges the page and rejects invalid references");
+
+  const contextCount = await page.evaluate(() => (window as any).observations.contexts.length);
+  await view.locator("#page-input").fill("2");
+  // Trigger a re-render without moving keyboard focus out of the edited page field.
+  await view.locator("#zoom-in-btn").evaluate(button => (button as HTMLButtonElement).click());
+  await expect.poll(() => page.evaluate(() => (window as any).observations.contexts.length)).toBeGreaterThan(contextCount);
+  await expect(view.locator("#page-input")).toHaveValue("2");
+  await view.locator("#page-input").press("Enter");
+  await expect(view.locator("#text-layer")).toContainText("Beta unique");
+  await go(3);
+  await expect(view.locator("#text-layer")).toContainText("Gamma unique");
+  check("a render completing while the page field is focused preserves the user's unsubmitted page number");
+
   const secondPdf = await PDFDocument.create();
   const font = await secondPdf.embedFont(StandardFonts.Helvetica);
-  secondPdf.addPage().drawText("A different book with independent state", { x: 40, y: 740, font, size: 18 });
+  const secondPage = secondPdf.addPage();
+  secondPage.drawText("A different book with independent state", { x: 40, y: 740, font, size: 18 });
+  secondPage.setRotation(degrees(90));
+  secondPdf.catalog.set(PDFName.of("PageLabels"), secondPdf.context.obj({ Nums: [0, { S: PDFName.of("r"), St: 4 }] }));
   await view.locator("#library-home").click();
   await view.locator("#library-file").setInputFiles({ name: "second.pdf", mimeType: "application/pdf", buffer: Buffer.from(await secondPdf.save()) });
   await expect(view.locator(".library-item")).toHaveCount(2);
@@ -151,6 +194,16 @@ try {
   const nextMessage = await page.evaluate(() => (window as any).observations.messages[1].content[0].text);
   assert.ok(nextMessage.includes(second.assetId) && nextMessage.includes(selectedSecond));
   assert.ok(!nextMessage.includes(asset.assetId));
+  const rotatedContext = JSON.parse(nextMessage.slice(nextMessage.indexOf('{"schemaVersion"')));
+  assert.equal(rotatedContext.location.rotation, 90);
+  assert.equal(rotatedContext.location.pageNumber, 1);
+  assert.equal(rotatedContext.location.pageLabel, "iv");
+  assert.ok(rotatedContext.location.rects.every((r: any) => r.x >= 0 && r.y >= 0 && r.width > 0 && r.height > 0));
+  const wrongBook = await client.callTool({ name: "reader_navigate", arguments: {
+    target: { ...target, viewUUID: rotatedContext.viewUUID }, location: { format: "pdf", pageNumber: 2 },
+  } });
+  assert.ok(wrongBook.isError, JSON.stringify(wrongBook));
+  await expect(view.locator("#page-input")).toHaveValue("1");
   check("switching books clears old selection, page, bookmarks and question identity");
 
   await view.locator("#library-home").click();

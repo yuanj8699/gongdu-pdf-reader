@@ -81,6 +81,8 @@ import "./mcp-app.css";
 import { createReaderNavigation } from "./reader-navigation.js";
 import { createLibraryPanel, legacyReadingState, type LibraryCall } from "./library-panel.js";
 import type { LibraryAsset, ReadingState } from "./library-types.js";
+import { HostBridge } from "./host-bridge.js";
+import { createReadingContext, withNearbyText, findSelectionInText, assertReferenceTarget, type ReadingContext, type SelectionRect } from "./reading-context.js";
 
 const MAX_MODEL_CONTEXT_LENGTH = 15000;
 // Configure PDF.js worker
@@ -253,7 +255,14 @@ function documentStorageKey(): string | undefined {
   const fingerprint = pdfDocument?.fingerprints[0];
   return fingerprint ? `reader:${fingerprint}` : undefined;
 }
-type ReadingSelection = { text: string; page: number; document: pdfjsLib.PDFDocumentProxy; title: string; url: string; viewId?: string; asset?: LibraryAsset };
+let pageLabels: string[] | null = null;
+let renderedRotation = 0;
+type ReadingSelection = { text: string; page: number; document: pdfjsLib.PDFDocumentProxy; context: ReadingContext };
+function captureReadingContext(text?: string, rects?: SelectionRect[]): ReadingContext {
+  return createReadingContext({ asset: currentLibraryAsset, viewUUID, title: pdfTitle || "PDF", uri: pdfUrl,
+    fingerprint: pdfDocument?.fingerprints[0] ?? undefined, pageNumber: currentPage, pageLabel: pageLabels?.[currentPage - 1],
+    rotation: renderedRotation, text, rects });
+}
 let selectionSnapshot: ReadingSelection | null = null;
 let pressedSelection: ReadingSelection | null = null;
 let explanationSending = false;
@@ -264,7 +273,13 @@ function readSelection(): ReadingSelection | null {
   const range = selection.getRangeAt(0);
   if (!textLayerEl.contains(range.startContainer) || !textLayerEl.contains(range.endContainer)) return null;
   const text = selection.toString().replace(/\s+/g, " ").trim();
-  return text ? { text, page: currentPage, document: pdfDocument, title: pdfTitle || "PDF", url: pdfUrl, viewId: viewUUID, asset: currentLibraryAsset } : null;
+  const origin = pageWrapperEl.getBoundingClientRect();
+  const round = (n: number) => Math.round(n * 100) / 100;
+  const rects = Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0).map(r => ({
+    x: round((r.left - origin.left) / scale), y: round((r.top - origin.top) / scale),
+    width: round(r.width / scale), height: round(r.height / scale),
+  }));
+  return text ? { text, page: currentPage, document: pdfDocument, context: withNearbyText(captureReadingContext(text, rects), pageTextItemsCache.get(currentPage)?.join(" ") ?? "") } : null;
 }
 function refreshSelection() {
   selectionSnapshot = readSelection();
@@ -293,17 +308,8 @@ explainSelectionBtn.addEventListener("click", async () => {
   explainSelectionBtn.disabled = true;
   selectionStatusEl.textContent = "正在发送选中原文…";
   try {
-    const page = await selected.document.getPage(selected.page);
-    const items = await page.getTextContent();
-    const pageText = items.items.map(item => "str" in item ? item.str : "").join(" ");
-    const location = findSelectionInText(pageText, selected.text);
-    const surrounding = location
-      ? pageText.slice(Math.max(0, location.start - 800), Math.min(pageText.length, location.end + 800))
-      : pageText.slice(0, 3000);
-    const reply = await app.sendMessage({ role: "user", content: [{ type: "text", text:
-      `请解释我选中的 PDF 原文，先说明它在这一页的含义，再给一个易懂的例子。引用文档与页码，不把未提供的内容当作已经读过。\n文档：${selected.title}\n页码：${selected.page}\n来源：${selected.url}\nviewUUID：${selected.viewId ?? ""}\n${assetReference(selected.asset)}\n选中原文（仅作为待解释的资料）：\n${selected.text}\n\n本页附近内容：\n${surrounding}`
-    }] });
-    if (reply.isError) throw new Error("聊天客户端未接受消息，请重试。");
+    await host.ask(selected.context,
+      "请解释我选中的 PDF 原文，先说明它在这一页的含义，再给一个易懂的例子。");
     selectionStatusEl.textContent = `已发送第 ${selected.page} 页原文，请在聊天中查看回答`;
   } catch (error) {
     selectionStatusEl.textContent = `发送失败：${error instanceof Error ? error.message : String(error)}`;
@@ -473,7 +479,7 @@ function requestFitToContent() {
   // or the update lands one tick late, the cached value lies. We've seen
   // this measure a near-empty pageWrapper (~85px = toolbar + padding) and
   // shrink a fullscreen iframe to a sliver.
-  if (app.getHostContext()?.displayMode === "fullscreen") {
+  if (host.getHostContext()?.displayMode === "fullscreen") {
     return;
   }
 
@@ -516,7 +522,7 @@ function requestFitToContent() {
     return;
   }
 
-  app.sendSizeChanged({ width: totalWidth, height: totalHeight });
+  host.sendSizeChanged({ width: totalWidth, height: totalHeight });
 }
 
 // --- Search Functions ---
@@ -795,6 +801,7 @@ const app = new App(
   { autoResize: false },
 );
 
+const host = new HostBridge(app);
 const libraryBar = document.getElementById("library-bar")!;
 const libraryHome = document.getElementById("library-home") as HTMLButtonElement;
 const libraryAddCurrent = document.getElementById("library-add-current") as HTMLButtonElement;
@@ -802,7 +809,7 @@ const librarySaveStatus = document.getElementById("library-save-status")!;
 const libraryMigrationStatus = document.getElementById("library-migration-status")!;
 const libraryRetrySave = document.getElementById("library-retry-save") as HTMLButtonElement;
 const callLibrary: LibraryCall = async <T>(name: string, args: Record<string, unknown>) => {
-  const result = await app.callServerTool({ name, arguments: args });
+  const result = await host.callTool({ name, arguments: args });
   if (result.isError) throw new Error(result.content?.filter(c => c.type === "text").map(c => c.text).join("\n") || "书库请求失败。");
   return result.structuredContent as T;
 };
@@ -813,7 +820,7 @@ async function openLibraryAsset(assetId: string) {
   try {
     await readingSaveWork;
     if (readingSaveFailed) throw new Error("当前阅读位置尚未保存，请先重试保存。");
-    const result = await app.callServerTool({ name: "display_pdf", arguments: { assetId } });
+    const result = await host.callTool({ name: "display_pdf", arguments: { assetId } });
     if (result.isError) throw new Error(result.content?.filter(c => c.type === "text").map(c => c.text).join("\n"));
     await queueReaderResult(result);
   } finally { openingAsset = false; }
@@ -1037,8 +1044,9 @@ function updateControls() {
   const hasSourceLink = /^https:\/\//i.test(pdfUrl);
   titleEl.style.textDecoration = hasSourceLink ? "underline" : "none";
   titleEl.style.cursor = hasSourceLink ? "pointer" : "default";
-  titleEl.onclick = hasSourceLink ? () => { void app.openLink({ url: pdfUrl }); } : null;
-  pageInputEl.value = String(currentPage);
+  titleEl.onclick = hasSourceLink ? () => { void host.openLink({ url: pdfUrl }); } : null;
+  // A completed render must not replace a page number the user is still typing.
+  if (document.activeElement !== pageInputEl) pageInputEl.value = String(currentPage);
   pageInputEl.max = String(totalPages);
   totalPagesEl.textContent = `of ${totalPages}`;
   prevBtn.disabled = currentPage <= 1;
@@ -1112,38 +1120,6 @@ function formatPageContent(
 }
 
 /**
- * Find selection position in page text using fuzzy matching.
- * TextLayer spans may lack spaces between them, so we try both exact and spaceless match.
- */
-function findSelectionInText(
-  pageText: string,
-  selectedText: string,
-): { start: number; end: number } | undefined {
-  if (!selectedText) return undefined;
-
-  // Try exact match
-  let start = pageText.indexOf(selectedText);
-  if (start >= 0) {
-    return { start, end: start + selectedText.length };
-  }
-
-  // Try spaceless match (TextLayer spans may not have spaces)
-  const noSpaceSel = selectedText.replace(/\s+/g, "");
-  const noSpaceText = pageText.replace(/\s+/g, "");
-  const noSpaceStart = noSpaceText.indexOf(noSpaceSel);
-  if (noSpaceStart >= 0) {
-    const positions: number[] = [];
-    for (let i = 0; i < pageText.length; i++) {
-      if (!/\s/.test(pageText[i])) positions.push(i);
-    }
-    start = positions[noSpaceStart];
-    return { start, end: positions[noSpaceStart + noSpaceSel.length - 1] + 1 };
-  }
-
-  return undefined;
-}
-
-/**
  * Format search results with excerpts for model context.
  * Limits to first 20 matches to avoid overwhelming the context.
  */
@@ -1194,6 +1170,7 @@ async function updatePageContext() {
   const document = pdfDocument;
   const pageNumber = currentPage;
   const snapshot = readSelection();
+  const capturedContext = snapshot?.context ?? captureReadingContext();
 
   try {
     const page = await document.getPage(pageNumber);
@@ -1232,7 +1209,7 @@ async function updatePageContext() {
     const pageHeightPt = Math.round(viewport.height);
 
     // Build context with tool ID for multi-tool disambiguation
-    const toolId = app.getHostContext()?.toolInfo?.id;
+    const toolId = host.getHostContext()?.toolInfo?.id;
     const header = [
       `PDF viewer${toolId ? ` (${toolId})` : ""}`,
       viewUUID ? `viewUUID: ${viewUUID}` : null,
@@ -1306,7 +1283,7 @@ async function updatePageContext() {
     const contentBlocks: ContentBlock[] = [{ type: "text", text: contextText }];
 
     // Add screenshot if host supports image content
-    if (app.getHostCapabilities()?.updateModelContext?.image) {
+    if (host.getHostCapabilities()?.updateModelContext?.image) {
       try {
         // Render offscreen with ENABLE_STORAGE so filled form fields are visible
         const base64Data = await renderPageOffscreen(currentPage);
@@ -1324,7 +1301,9 @@ async function updatePageContext() {
     }
 
     if (revision !== contextRevision || document !== pdfDocument || pageNumber !== currentPage) return;
-    await app.updateModelContext({ content: contentBlocks });
+    const readingContext = withNearbyText({ ...capturedContext, location: { ...capturedContext.location, rotation: viewport.rotation } }, pageText);
+    await host.updateContext({ content: contentBlocks, structuredContent: { readingContext } },
+      () => revision === contextRevision && document === pdfDocument && pageNumber === currentPage);
   } catch (err) {
     log.error("Error updating context:", err);
   }
@@ -2678,61 +2657,26 @@ async function renderPageOffscreen(pageNum: number): Promise<string> {
  * it can be fed straight back into `add_annotations`.
  */
 async function handleGetViewerState(requestId: string): Promise<void> {
-  const CONTEXT_CHARS = 200;
-
-  let selection: {
-    text: string;
-    contextBefore: string;
-    contextAfter: string;
-    boundingRect: { x: number; y: number; width: number; height: number };
-  } | null = null;
-
-  const sel = window.getSelection();
-  const selectedText = sel?.toString().replace(/\s+/g, " ").trim();
-  if (sel && selectedText && sel.rangeCount > 0) {
-    // Only treat it as a PDF selection if it lives inside the text layer of
-    // the rendered page (not the toolbar, search box, etc.).
-    const range = sel.getRangeAt(0);
-    const anchor =
-      range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
-        ? (range.commonAncestorContainer as Element)
-        : range.commonAncestorContainer.parentElement;
-    if (anchor && textLayerEl.contains(anchor)) {
-      // Context: locate selection in the page's extracted text and slice
-      // ±CONTEXT_CHARS around it. Falls back to empty strings if fuzzy
-      // match fails (still return text + rect — they're the load-bearing
-      // bits).
-      const pageText = pageTextCache.get(currentPage) ?? "";
-      const loc = findSelectionInText(pageText, selectedText);
-      const contextBefore = loc
-        ? pageText.slice(Math.max(0, loc.start - CONTEXT_CHARS), loc.start)
-        : "";
-      const contextAfter = loc
-        ? pageText.slice(loc.end, loc.end + CONTEXT_CHARS)
-        : "";
-
-      // Single bounding box, page-relative model coords. getBoundingClientRect
-      // is viewport-relative; subtract the page-wrapper origin then divide by
-      // scale → PDF points (top-left origin, y-down — matches the coord
-      // system documented in the interact tool description).
-      const r = range.getBoundingClientRect();
-      const origin = pageWrapperEl.getBoundingClientRect();
-      const round = (n: number) => Math.round(n * 100) / 100;
-      selection = {
-        text: selectedText,
-        contextBefore,
-        contextAfter,
-        boundingRect: {
-          x: round((r.left - origin.left) / scale),
-          y: round((r.top - origin.top) / scale),
-          width: round(r.width / scale),
-          height: round(r.height / scale),
-        },
-      };
-    }
+  const capturedDocument = pdfDocument;
+  const capturedPage = currentPage;
+  const selected = readSelection();
+  let readingContext = capturedDocument ? selected?.context ?? captureReadingContext() : null;
+  if (capturedDocument && readingContext) {
+    const page = await capturedDocument.getPage(capturedPage);
+    const text = await page.getTextContent();
+    readingContext = withNearbyText({ ...readingContext, location: { ...readingContext.location, rotation: page.rotate } }, text.items.map(item => "str" in item ? item.str : "").join(" "));
+    if (capturedDocument !== pdfDocument || capturedPage !== currentPage) throw new Error("阅读位置已变化，请重新读取上下文。");
   }
+  const rects = readingContext?.location.rects ?? [];
+  const left = Math.min(...rects.map(r => r.x)), top = Math.min(...rects.map(r => r.y));
+  const selection = readingContext?.selection ? { ...readingContext.selection,
+    boundingRect: rects.length ? { x: left, y: top,
+      width: Math.max(...rects.map(r => r.x + r.width)) - left,
+      height: Math.max(...rects.map(r => r.y + r.height)) - top } : { x: 0, y: 0, width: 0, height: 0 },
+  } : null;
 
   const state = {
+    readingContext,
     ...(currentLibraryAsset ? { libraryAsset: currentLibraryAsset } : {}),
     loaded: pdfDocument !== null,
     error: readerLoadError,
@@ -2744,7 +2688,7 @@ async function handleGetViewerState(requestId: string): Promise<void> {
     selection,
   };
 
-  await app.callServerTool({
+  await host.callTool({
     name: "submit_viewer_state",
     arguments: { requestId, state: JSON.stringify(state, null, 2) },
   });
@@ -2831,7 +2775,7 @@ async function handleGetPages(cmd: {
 
   // Submit results back to server
   try {
-    await app.callServerTool({
+    await host.callTool({
       name: "submit_page_data",
       arguments: { requestId: cmd.requestId, pages: results },
     });
@@ -3349,7 +3293,7 @@ async function savePdf(): Promise<void> {
     const pdfBytes = await getAnnotatedPdfBytes();
     const base64 = uint8ArrayToBase64(pdfBytes);
 
-    const result = await app.callServerTool({
+    const result = await host.callTool({
       name: "save_pdf",
       arguments: { url: pdfUrl, data: base64 },
     });
@@ -3402,8 +3346,8 @@ async function downloadAnnotatedPdf(): Promise<void> {
 
     const base64 = uint8ArrayToBase64(pdfBytes);
 
-    if (app.getHostCapabilities()?.downloadFile) {
-      const { isError } = await app.downloadFile({
+    if (host.getHostCapabilities()?.downloadFile) {
+      const { isError } = await host.downloadFile({
         contents: [
           {
             type: "resource",
@@ -3469,6 +3413,7 @@ async function renderPage() {
     const pageToRender = currentPage;
     const page = await pdfDocument.getPage(pageToRender);
     const viewport = page.getViewport({ scale });
+    renderedRotation = viewport.rotation;
 
     // Account for retina displays
     const dpr = window.devicePixelRatio || 1;
@@ -3820,12 +3765,12 @@ function resetZoom() {
 }
 
 async function setReaderDisplayMode(mode: "inline" | "fullscreen") {
-  const ctx = app.getHostContext();
+  const ctx = host.getHostContext();
   if (!ctx?.availableDisplayModes?.includes(mode)) {
     throw new Error("当前客户端不支持此阅读器显示方式");
   }
 
-  const result = await app.requestDisplayMode({ mode });
+  const result = await host.requestDisplayMode({ mode });
   if (result.mode !== mode) {
     throw new Error(`客户端未切换阅读器显示方式（仍为 ${result.mode}）`);
   }
@@ -3971,8 +3916,8 @@ initAnnotationPanel({
   setFocusedField: (name) => {
     focusedFieldName = name;
   },
-  sendMessage: (msg) => app.sendMessage(msg),
-  getHostContext: () => app.getHostContext(),
+  sendMessage: (msg) => host.sendMessage(msg),
+  getHostContext: () => host.getHostContext(),
 });
 
 // Search input events
@@ -4527,7 +4472,7 @@ async function fetchChunk(
 
   const request = (async (): Promise<RangeResult> => {
     try {
-      const result = await app.callServerTool({
+      const result = await host.callTool({
         name: "read_pdf_bytes",
         arguments: { url, offset: begin, byteCount: end - begin },
       });
@@ -4689,6 +4634,7 @@ async function reloadPdf(): Promise<void> {
     const { document, totalBytes } = await loadPdfProgressively(pdfUrl);
     pdfDocument = document;
     totalPages = document.numPages;
+    pageLabels = await document.getPageLabels();
     currentPage = Math.max(1, Math.min(currentPage, totalPages));
     void readerNavigation.load(document, documentStorageKey()!);
     readerNavigation.setCurrentPage(currentPage);
@@ -4905,7 +4851,7 @@ async function handleReaderResult(result: CallToolResult) {
     currentPage = 1; totalPages = 0; pdfUrl = ""; pdfTitle = undefined;
     loadingEl.style.display = "none"; errorEl.style.display = "none"; viewerEl.style.display = "none";
     try {
-      await app.updateModelContext({ content: [{ type: "text", text: "当前打开的是本地 PDF 书库，尚未选中资料或原文。" }] });
+      await host.updateContext({ content: [{ type: "text", text: "当前打开的是本地 PDF 书库，尚未选中资料或原文。" }], structuredContent: { readingContext: null } });
     } catch {
       librarySaveStatus.textContent = "书库已打开，但客户端未接受新的阅读上下文。";
     }
@@ -4945,6 +4891,7 @@ async function handleReaderResult(result: CallToolResult) {
     const { document, totalBytes } = await loadPdfProgressively(pdfUrl);
     pdfDocument = document;
     totalPages = document.numPages;
+    pageLabels = await document.getPageLabels();
     let savedPage: number | null;
     if (currentLibraryAsset) {
       const asset = currentLibraryAsset;
@@ -4982,7 +4929,7 @@ async function handleReaderResult(result: CallToolResult) {
     loadingIndicatorEl.style.display = "none";
 
     showViewer();
-    downloadBtn.style.display = app.getHostCapabilities()?.downloadFile
+    downloadBtn.style.display = host.getHostCapabilities()?.downloadFile
       ? ""
       : "none";
 
@@ -5078,6 +5025,18 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
   for (const cmd of commands) {
     log.info("Processing command:", cmd.type, cmd);
     switch (cmd.type) {
+      case "navigate_reference":
+        try {
+          assertReferenceTarget(cmd.target, pdfDocument ? captureReadingContext() : null, cmd.location.pageNumber, totalPages);
+          goToPage(cmd.location.pageNumber);
+          while (isRendering) await renderFinished;
+          if (readerLoadError) throw new Error(readerLoadError);
+          await handleGetViewerState(cmd.requestId);
+        } catch (error) {
+          await host.callTool({ name: "submit_viewer_state", arguments: { requestId: cmd.requestId,
+            error: error instanceof Error ? error.message : String(error) } });
+        }
+        break;
       case "navigate":
         if (cmd.page >= 1 && cmd.page <= totalPages) {
           goToPage(cmd.page);
@@ -5118,7 +5077,7 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
           await setReaderDisplayMode(cmd.mode);
           await handleGetViewerState(cmd.requestId);
         } catch (err) {
-          await app.callServerTool({
+          await host.callTool({
             name: "submit_viewer_state",
             arguments: {
               requestId: cmd.requestId,
@@ -5237,7 +5196,7 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
         try {
           const pdfBytes = await getAnnotatedPdfBytes();
           const base64 = uint8ArrayToBase64(pdfBytes);
-          await app.callServerTool({
+          await host.callTool({
             name: "submit_save_data",
             arguments: { requestId: cmd.requestId, data: base64 },
           });
@@ -5338,7 +5297,7 @@ function startPolling(): void {
 async function pollLoop(generation: number): Promise<void> {
   while (polling && viewUUID && generation === pollGeneration) {
     try {
-      const result = await app.callServerTool({
+      const result = await host.callTool({
         name: "poll_pdf_commands",
         arguments: { viewUUID },
       });
@@ -5860,7 +5819,7 @@ app
   .connect()
   .then(() => {
     log.info("Connected to host");
-    const ctx = app.getHostContext();
+    const ctx = host.getHostContext();
     if (ctx) {
       handleHostContextChanged(ctx);
     }

@@ -57,6 +57,7 @@ const STANDARD_FONT_DATA_PATH = path.join(
 import { z } from "zod";
 import { LibraryService } from "./library.js";
 import { LibraryAssetSchema, registerLibraryTools } from "./library-tools.js";
+import { ReferenceTargetSchema, PdfPageSchema } from "./src/reading-context.js";
 
 // =============================================================================
 // Configuration
@@ -355,6 +356,7 @@ const viewsPolled = new Set<string>();
  * Exported for tests.
  */
 export const viewSourcePaths = new Map<string, string>();
+const viewLibraryAssets = new Map<string, string>();
 
 /** Valid form field names per viewer UUID (populated during display_pdf) */
 const viewFieldNames = new Map<string, Set<string>>();
@@ -397,6 +399,7 @@ function pruneStaleQueues(): void {
       viewLastActivity.delete(uuid);
       commandQueues.delete(uuid);
       viewFieldNames.delete(uuid);
+      viewLibraryAssets.delete(uuid);
       viewsPolled.delete(uuid);
       viewSourcePaths.delete(uuid);
       stopFileWatch(uuid);
@@ -1584,6 +1587,7 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
       // Probe file size so the client can set up range transport without an extra fetch
       const { totalBytes } = await readPdfRange(normalized, 0, 1);
       const uuid = randomUUID();
+      if (libraryAsset && !disableInteract) viewLibraryAssets.set(uuid, libraryAsset.assetId);
       // Start the heartbeat now so the sweep can clean up viewFieldNames/
       // viewFileWatches even if no interact calls ever happen.
       if (!disableInteract) touchView(uuid);
@@ -1779,6 +1783,27 @@ URL: ${normalized}`,
   );
 
   if (!disableInteract) {
+    server.registerTool("reader_navigate", {
+      description: "Jump to a cited PDF file page in an already-open library viewer. Copy all target IDs from readingContext; the exact document/version/asset and viewUUID must match. location.pageNumber is the one-based file page, not a printed page label. Returns acknowledged viewer state; rejects stale references and out-of-range pages.",
+      inputSchema: z.object({ target: ReferenceTargetSchema, location: PdfPageSchema }),
+      annotations: { destructiveHint: false, idempotentHint: true },
+    }, async ({ target, location }, extra) => {
+      try {
+        if (!library || viewLibraryAssets.get(target.viewUUID) !== target.assetId) throw new Error("引用窗口不属于该书库文件，请打开对应资料后重新定位。");
+        const asset = library.asset(target.assetId);
+        if (asset.documentId !== target.documentId || asset.versionId !== target.versionId) throw new Error("引用的资料版本不一致。");
+        if (location.pageNumber > asset.pageCount) throw new Error(`引用页码超出范围（1–${asset.pageCount}）。`);
+        await ensureViewerIsPolling(target.viewUUID);
+        const requestId = randomUUID();
+        const response = waitForViewerState(requestId, extra.mcpReq.signal);
+        enqueueCommand(target.viewUUID, { type: "navigate_reference", target, location, requestId });
+        const state = JSON.parse(await response);
+        if (state.currentPage !== location.pageNumber) throw new Error("阅读位置在跳转期间发生变化，请重新定位。");
+        return { content: [{ type: "text" as const, text: JSON.stringify(state) }], structuredContent: state };
+      } catch (error) {
+        return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] };
+      }
+    });
     // Schema for a single interact command (used in commands array)
     const InteractCommandSchema = z.object({
       action: z
