@@ -1,5 +1,6 @@
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import "./reader-navigation.css";
+import type { Bookmark } from "./library-types.js";
 
 type PdfOutlineItem = Awaited<ReturnType<PDFDocumentProxy["getOutline"]>>[number];
 type NavigationTab = "outline" | "bookmarks";
@@ -15,9 +16,9 @@ interface OutlineEntry {
   button?: HTMLButtonElement;
 }
 
-interface Bookmark {
-  page: number;
-  title: string;
+export interface BookmarkStore {
+  bookmarks: Bookmark[];
+  change: (action: "add" | "remove", page: number, title?: string) => Promise<Bookmark[]>;
 }
 
 export interface ReaderNavigationOptions {
@@ -32,7 +33,7 @@ export interface ReaderNavigationOptions {
 
 export interface ReaderNavigation {
   /** Use a document fingerprint or canonical URI, never a per-tool-call ID. */
-  load: (document: PDFDocumentProxy, documentKey: string) => Promise<void>;
+  load: (document: PDFDocumentProxy, documentKey: string, store?: BookmarkStore) => Promise<void>;
   setCurrentPage: (page: number) => void;
   /** Clears this view, without deleting this document's saved bookmarks. */
   clear: () => void;
@@ -105,6 +106,8 @@ export function createReaderNavigation(
   let outline: OutlineEntry[] = [];
   let entries: OutlineEntry[] = [];
   let bookmarks: Bookmark[] = [];
+  let bookmarkStore: BookmarkStore | undefined;
+  let savingBookmark = false;
 
   container.classList.add("reader-navigation");
   container.setAttribute("role", "navigation");
@@ -304,7 +307,7 @@ export function createReaderNavigation(
       else jump.removeAttribute("aria-current");
     }
     const bookmarked = bookmarks.some((item) => item.page === page);
-    addBookmarkButton.disabled = !pdf || bookmarked;
+    addBookmarkButton.disabled = !pdf || bookmarked || savingBookmark;
     addBookmarkButton.textContent = bookmarked ? "✓ 当前页已有书签" : "+ 添加当前页";
   }
 
@@ -397,7 +400,12 @@ export function createReaderNavigation(
       const remove = button("reader-bookmark-remove", "×");
       remove.setAttribute("aria-label", `删除第 ${bookmark.page} 页书签`);
       remove.title = `删除第 ${bookmark.page} 页书签`;
-      remove.addEventListener("click", () => {
+      remove.disabled = savingBookmark;
+      remove.addEventListener("click", async () => {
+        if (bookmarkStore) {
+          await changeSavedBookmark("remove", bookmark.page);
+          return;
+        }
         bookmarks = bookmarks.filter((item) => item.page !== bookmark.page);
         persistBookmarks();
         renderBookmarks();
@@ -411,11 +419,28 @@ export function createReaderNavigation(
     setCurrentPage(currentPage);
   }
 
-  addBookmarkButton.addEventListener("click", () => {
+  async function changeSavedBookmark(action: "add" | "remove", page: number, title?: string) {
+    if (!bookmarkStore || savingBookmark) return;
+    const savingGeneration = generation;
+    savingBookmark = true; setStorageError("正在保存书签…"); renderBookmarks();
+    try {
+      const saved = await bookmarkStore.change(action, page, title);
+      if (generation !== savingGeneration) return;
+      bookmarks = saved; setStorageError("");
+      announcement.textContent = action === "add" ? `已保存第 ${page} 页书签。` : `已删除第 ${page} 页书签。`;
+    } catch (error) {
+      if (generation === savingGeneration) setStorageError(`书签保存失败，请重试：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (generation === savingGeneration) { savingBookmark = false; renderBookmarks(); }
+    }
+  }
+
+  addBookmarkButton.addEventListener("click", async () => {
     if (!pdf) return;
     const page = options.getCurrentPage();
     if (bookmarks.some((bookmark) => bookmark.page === page)) return;
     const title = currentEntry(page)?.title ?? `第 ${page} 页`;
+    if (bookmarkStore) { await changeSavedBookmark("add", page, title.slice(0, 200)); return; }
     bookmarks.push({ page, title: title.slice(0, 200) });
     bookmarks.sort((a, b) => a.page - b.page);
     currentPage = page;
@@ -429,6 +454,8 @@ export function createReaderNavigation(
     generation++;
     pdf = null;
     storageKey = null;
+    bookmarkStore = undefined;
+    savingBookmark = false;
     outline = [];
     entries = [];
     bookmarks = [];
@@ -442,13 +469,16 @@ export function createReaderNavigation(
     renderBookmarks();
   }
 
-  async function load(document: PDFDocumentProxy, documentKey: string) {
+  async function load(document: PDFDocumentProxy, documentKey: string, store?: BookmarkStore) {
     if (!documentKey.trim()) throw new Error("Reader navigation requires a stable document key");
     clear();
     pdf = document;
     storageKey = STORAGE_PREFIX + encodeURIComponent(documentKey);
+    bookmarkStore = store;
+    storageNote.textContent = store ? "书签已保存到本机书库，重启后可恢复。" : "书签仅保存在此设备的浏览器中。";
     currentPage = options.getCurrentPage();
-    restoreBookmarks();
+    if (store) bookmarks = store.bookmarks;
+    else restoreBookmarks();
     renderBookmarks();
     outlineMessage.textContent = "正在读取章节目录…";
     outlinePanel.setAttribute("aria-busy", "true");

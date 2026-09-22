@@ -7,6 +7,14 @@
   </head>
   <body>
     <div class="main">
+      <div id="library-bar" class="library-bar" hidden>
+        <button id="library-home" type="button">书库</button>
+        <button id="library-add-current" type="button" hidden>加入书库</button>
+        <span id="library-save-status" role="status" aria-live="polite"></span>
+        <span id="library-migration-status" role="status"></span>
+        <button id="library-retry-save" type="button" hidden>重试保存</button>
+      </div>
+      <section id="library-panel" class="library-panel" aria-label="我的书库" hidden></section>
       <!-- Loading State -->
       <div id="loading" class="loading">
         <div class="spinner"></div>

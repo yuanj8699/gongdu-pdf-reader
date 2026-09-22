@@ -6,6 +6,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { createMcpExpressApp } from "@modelcontextprotocol/express";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import type { McpServer } from "@modelcontextprotocol/server";
@@ -14,6 +15,7 @@ import cors from "cors";
 import type { Request, Response } from "express";
 import {
   createServer,
+  createLibrary,
   isArxivUrl,
   isFileUrl,
   normalizeArxivUrl,
@@ -177,11 +179,16 @@ async function main() {
   const defaultPdfUrl = urls.find((url) =>
     !isFileUrl(url) || allowedLocalFiles.has(path.resolve(fileUrlToPath(url))),
   ) ?? DEFAULT_PDF;
+  const libraryDirectory = process.env.PDF_READER_DATA_DIR || path.join(
+    process.env.LOCALAPPDATA || path.join(os.homedir(), ".local", "share"), "GongduReader",
+  );
+  const library = createLibrary(libraryDirectory);
+  console.error(`[pdf-server] Library: ${library.directory}`);
 
   if (stdio) {
     // Only explicit files/directories are allowed unless client roots are opted in.
     await startStdioServer(() =>
-      createServer({ enableInteract: true, useClientRoots, debug, defaultPdfUrl }),
+      createServer({ enableInteract: true, useClientRoots, debug, defaultPdfUrl, library }),
     );
   } else {
     // HTTP → client is remote, only honour roots with explicit opt-in
@@ -192,7 +199,7 @@ async function main() {
       );
     }
     await startStreamableHTTPServer(() =>
-      createServer({ useClientRoots, enableInteract, debug, defaultPdfUrl }),
+      createServer({ useClientRoots, enableInteract, debug, defaultPdfUrl, library }),
     );
   }
 }

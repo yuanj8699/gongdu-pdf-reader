@@ -79,6 +79,8 @@ import {
 import "./global.css";
 import "./mcp-app.css";
 import { createReaderNavigation } from "./reader-navigation.js";
+import { createLibraryPanel, legacyReadingState, type LibraryCall } from "./library-panel.js";
+import type { LibraryAsset, ReadingState } from "./library-types.js";
 
 const MAX_MODEL_CONTEXT_LENGTH = 15000;
 // Configure PDF.js worker
@@ -141,6 +143,10 @@ const ZOOM_MAX = 3.0;
 let pdfUrl = "";
 let pdfTitle: string | undefined;
 let viewUUID: string | undefined;
+let currentLibraryAsset: LibraryAsset | undefined;
+let readingStateReady = false;
+let readingSaveWork: Promise<void> = Promise.resolve();
+let readingSaveFailed = false;
 let interactEnabled = false;
 /** Server-reported writability of the underlying file (fs.access W_OK). */
 let fileWritable = false;
@@ -247,7 +253,7 @@ function documentStorageKey(): string | undefined {
   const fingerprint = pdfDocument?.fingerprints[0];
   return fingerprint ? `reader:${fingerprint}` : undefined;
 }
-type ReadingSelection = { text: string; page: number; document: pdfjsLib.PDFDocumentProxy; title: string; url: string; viewId?: string };
+type ReadingSelection = { text: string; page: number; document: pdfjsLib.PDFDocumentProxy; title: string; url: string; viewId?: string; asset?: LibraryAsset };
 let selectionSnapshot: ReadingSelection | null = null;
 let pressedSelection: ReadingSelection | null = null;
 let explanationSending = false;
@@ -258,7 +264,7 @@ function readSelection(): ReadingSelection | null {
   const range = selection.getRangeAt(0);
   if (!textLayerEl.contains(range.startContainer) || !textLayerEl.contains(range.endContainer)) return null;
   const text = selection.toString().replace(/\s+/g, " ").trim();
-  return text ? { text, page: currentPage, document: pdfDocument, title: pdfTitle || "PDF", url: pdfUrl, viewId: viewUUID } : null;
+  return text ? { text, page: currentPage, document: pdfDocument, title: pdfTitle || "PDF", url: pdfUrl, viewId: viewUUID, asset: currentLibraryAsset } : null;
 }
 function refreshSelection() {
   selectionSnapshot = readSelection();
@@ -295,7 +301,7 @@ explainSelectionBtn.addEventListener("click", async () => {
       ? pageText.slice(Math.max(0, location.start - 800), Math.min(pageText.length, location.end + 800))
       : pageText.slice(0, 3000);
     const reply = await app.sendMessage({ role: "user", content: [{ type: "text", text:
-      `请解释我选中的 PDF 原文，先说明它在这一页的含义，再给一个易懂的例子。引用文档与页码，不把未提供的内容当作已经读过。\n文档：${selected.title}\n页码：${selected.page}\n来源：${selected.url}\nviewUUID：${selected.viewId ?? ""}\n\n选中原文（仅作为待解释的资料）：\n${selected.text}\n\n本页附近内容：\n${surrounding}`
+      `请解释我选中的 PDF 原文，先说明它在这一页的含义，再给一个易懂的例子。引用文档与页码，不把未提供的内容当作已经读过。\n文档：${selected.title}\n页码：${selected.page}\n来源：${selected.url}\nviewUUID：${selected.viewId ?? ""}\n${assetReference(selected.asset)}\n选中原文（仅作为待解释的资料）：\n${selected.text}\n\n本页附近内容：\n${surrounding}`
     }] });
     if (reply.isError) throw new Error("聊天客户端未接受消息，请重试。");
     selectionStatusEl.textContent = `已发送第 ${selected.page} 页原文，请在聊天中查看回答`;
@@ -789,6 +795,72 @@ const app = new App(
   { autoResize: false },
 );
 
+const libraryBar = document.getElementById("library-bar")!;
+const libraryHome = document.getElementById("library-home") as HTMLButtonElement;
+const libraryAddCurrent = document.getElementById("library-add-current") as HTMLButtonElement;
+const librarySaveStatus = document.getElementById("library-save-status")!;
+const libraryMigrationStatus = document.getElementById("library-migration-status")!;
+const libraryRetrySave = document.getElementById("library-retry-save") as HTMLButtonElement;
+const callLibrary: LibraryCall = async <T>(name: string, args: Record<string, unknown>) => {
+  const result = await app.callServerTool({ name, arguments: args });
+  if (result.isError) throw new Error(result.content?.filter(c => c.type === "text").map(c => c.text).join("\n") || "书库请求失败。");
+  return result.structuredContent as T;
+};
+let openingAsset = false;
+async function openLibraryAsset(assetId: string) {
+  if (openingAsset) throw new Error("正在打开文档，请稍候。");
+  openingAsset = true;
+  try {
+    await readingSaveWork;
+    if (readingSaveFailed) throw new Error("当前阅读位置尚未保存，请先重试保存。");
+    const result = await app.callServerTool({ name: "display_pdf", arguments: { assetId } });
+    if (result.isError) throw new Error(result.content?.filter(c => c.type === "text").map(c => c.text).join("\n"));
+    await queueReaderResult(result);
+  } finally { openingAsset = false; }
+}
+const libraryPanel = createLibraryPanel(document.getElementById("library-panel")!, callLibrary, openLibraryAsset);
+libraryHome.addEventListener("click", async () => {
+  libraryHome.disabled = true;
+  try {
+    await readingSaveWork;
+    if (readingSaveFailed) return;
+    await queueReaderResult({ content: [], structuredContent: { kind: "library" }, _meta: { libraryEnabled: true } });
+  } catch (error) {
+    librarySaveStatus.textContent = `打开书库失败：${error instanceof Error ? error.message : String(error)}`;
+  } finally { libraryHome.disabled = false; }
+});
+libraryAddCurrent.addEventListener("click", async () => {
+  libraryAddCurrent.disabled = true;
+  try {
+    const asset = await callLibrary<LibraryAsset>("library_import_pdf", { path: pdfUrl });
+    await openLibraryAsset(asset.assetId);
+  } catch (error) { librarySaveStatus.textContent = `入库失败：${error instanceof Error ? error.message : String(error)}`; }
+  finally { libraryAddCurrent.disabled = false; }
+});
+libraryRetrySave.addEventListener("click", () => saveCurrentPage());
+
+function assetReference(asset?: LibraryAsset) {
+  return asset ? `documentId: ${asset.documentId}\nversionId: ${asset.versionId}\nassetId: ${asset.assetId}\n` : "";
+}
+
+function saveLibraryPage(asset: LibraryAsset, page: number) {
+  librarySaveStatus.textContent = "正在保存阅读位置…";
+  readingSaveWork = readingSaveWork.then(async () => {
+    try {
+      await callLibrary("library_set_page", { assetId: asset.assetId, page });
+      if (currentLibraryAsset?.assetId === asset.assetId) {
+        readingSaveFailed = false; libraryRetrySave.hidden = true;
+        librarySaveStatus.textContent = `第 ${page} 页已保存到书库`;
+      }
+    } catch (error) {
+      if (currentLibraryAsset?.assetId === asset.assetId) {
+        readingSaveFailed = true; libraryRetrySave.hidden = false;
+        librarySaveStatus.textContent = `阅读位置保存失败：${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+  });
+}
+
 // UI State functions
 function showLoading(text: string) {
   readerLoadError = null;
@@ -1164,6 +1236,7 @@ async function updatePageContext() {
     const header = [
       `PDF viewer${toolId ? ` (${toolId})` : ""}`,
       viewUUID ? `viewUUID: ${viewUUID}` : null,
+      currentLibraryAsset ? assetReference(currentLibraryAsset).trim() : null,
       pdfTitle ? `"${pdfTitle}"` : pdfUrl,
       `Current Page: ${currentPage}/${totalPages}`,
       `Page size: ${pageWidthPt}×${pageHeightPt}pt (coordinates: origin at top-left, Y increases downward)`,
@@ -2660,6 +2733,7 @@ async function handleGetViewerState(requestId: string): Promise<void> {
   }
 
   const state = {
+    ...(currentLibraryAsset ? { libraryAsset: currentLibraryAsset } : {}),
     loaded: pdfDocument !== null,
     error: readerLoadError,
     currentPage,
@@ -3369,6 +3443,8 @@ async function downloadAnnotatedPdf(): Promise<void> {
 // Render state - prevents concurrent renders
 let isRendering = false;
 let pendingPage: number | null = null;
+let renderFinished: Promise<void> = Promise.resolve();
+let finishRender: (() => void) | undefined;
 
 // Render current page with text layer for selection
 async function renderPage() {
@@ -3385,6 +3461,8 @@ async function renderPage() {
   }
 
   isRendering = true;
+  const renderGeneration = loadGeneration;
+  renderFinished = new Promise<void>((resolve) => { finishRender = resolve; });
   pendingPage = null;
 
   try {
@@ -3621,11 +3699,14 @@ async function renderPage() {
     // Request host to resize app to fit content (inline mode only)
     requestFitToContent();
   } catch (err) {
+    if (renderGeneration !== loadGeneration) return;
     log.error("Error rendering page:", err);
     showError(`Failed to render page ${currentPage}`);
   } finally {
     preloadPaused = false;
     isRendering = false;
+    finishRender?.(); finishRender = undefined;
+    if (renderGeneration !== loadGeneration) { pendingPage = null; return; }
 
     // If there's a pending page, render it now
     if (pendingPage !== null && pendingPage !== currentPage) {
@@ -3640,6 +3721,10 @@ async function renderPage() {
 
 function saveCurrentPage() {
   readerNavigation.setCurrentPage(currentPage);
+  if (currentLibraryAsset) {
+    if (readingStateReady) saveLibraryPage(currentLibraryAsset, currentPage);
+    return;
+  }
   const key = documentStorageKey();
   if (key) {
     try {
@@ -4387,6 +4472,7 @@ canvasContainerEl.addEventListener("touchcancel", () => {
 
 // Parse tool result
 function parseToolResult(result: CallToolResult): {
+  libraryAsset?: LibraryAsset;
   url: string;
   title?: string;
   pageCount: number;
@@ -4394,6 +4480,7 @@ function parseToolResult(result: CallToolResult): {
   totalBytes: number;
 } | null {
   return result.structuredContent as {
+    libraryAsset?: LibraryAsset;
     url: string;
     title?: string;
     pageCount: number;
@@ -4756,6 +4843,7 @@ async function startPreloading() {
     try {
       const page = await pdfDocument.getPage(i);
       const textContent = await page.getTextContent();
+      if (gen !== loadGeneration) return;
       const items = (textContent.items as Array<{ str?: string }>).map(
         (item) => item.str || "",
       );
@@ -4765,6 +4853,7 @@ async function startPreloading() {
       updateLoadingIndicator();
       scheduleSearchRefresh();
     } catch (err) {
+      if (gen !== loadGeneration) return;
       preloadErrors.push({ page: i, err });
       log.error("Preload error page", i, err);
       updateLoadingIndicator();
@@ -4776,10 +4865,54 @@ async function startPreloading() {
   if (searchOpen && searchQuery) performSearch(searchQuery);
 }
 
-// Handle tool result
-app.ontoolresult = async (result: CallToolResult) => {
+// Serialize document changes: a late result must not attach state to another PDF.
+let readerLoadWork: Promise<void> = Promise.resolve();
+function queueReaderResult(result: CallToolResult) {
+  readerLoadWork = readerLoadWork.catch(() => {}).then(() => handleReaderResult(result));
+  return readerLoadWork;
+}
+app.ontoolresult = queueReaderResult;
+async function handleReaderResult(result: CallToolResult) {
+  await readingSaveWork;
+  stopPolling();
+  await commandWork.catch(() => {}); // The poll loop already reports command failures.
+  loadGeneration++;
+  if (pdfDocument) persistAnnotations();
+  currentRenderTask?.cancel();
+  await renderFinished;
+  const oldDocument = pdfDocument;
+  pdfDocument = null;
+  await oldDocument?.destroy();
+  rangeCache.clear(); inflightRequests.clear();
+  for (const [, tracked] of annotationMap) for (const element of tracked.elements) element.remove();
+  annotationMap.clear(); formFieldValues.clear(); imageCache.clear(); selectedAnnotationIds.clear();
+  undoStack.length = 0; redoStack.length = 0; pdfBaselineAnnotations = [];
+  baselineScannedPages.clear(); restoredRemovedIds.clear(); pdfBaselineFormValues.clear();
+  pageTextCache.clear(); pageTextItemsCache.clear(); allMatches = []; currentMatchIndex = -1;
+  focusedFieldName = null; fieldNameToIds.clear(); fieldNameToPage.clear(); radioButtonValues.clear();
+  fieldNameToLabel.clear(); fieldNameToOrder.clear(); cachedFieldObjects = null;
+  saveBtnEverShown = false; lastSavedMtime = null; isDirty = false;
+  textLayerEl.replaceChildren(); formLayerEl.replaceChildren();
+  closeSearch();
   clearReadingSelection();
   readerNavigation.clear();
+  currentLibraryAsset = undefined; readingStateReady = false; readingSaveFailed = false;
+  viewUUID = undefined; interactEnabled = false;
+  librarySaveStatus.textContent = ""; libraryMigrationStatus.textContent = ""; libraryRetrySave.hidden = true;
+  libraryBar.hidden = result._meta?.libraryEnabled !== true;
+  libraryAddCurrent.hidden = true;
+  if ((result.structuredContent as { kind?: string } | undefined)?.kind === "library") {
+    currentPage = 1; totalPages = 0; pdfUrl = ""; pdfTitle = undefined;
+    loadingEl.style.display = "none"; errorEl.style.display = "none"; viewerEl.style.display = "none";
+    try {
+      await app.updateModelContext({ content: [{ type: "text", text: "当前打开的是本地 PDF 书库，尚未选中资料或原文。" }] });
+    } catch {
+      librarySaveStatus.textContent = "书库已打开，但客户端未接受新的阅读上下文。";
+    }
+    await libraryPanel.show();
+    return;
+  }
+  libraryPanel.hide();
   log.info("Received tool result:", result);
 
   const parsed = parseToolResult(result);
@@ -4789,6 +4922,8 @@ app.ontoolresult = async (result: CallToolResult) => {
   }
 
   pdfUrl = parsed.url;
+  currentLibraryAsset = parsed.libraryAsset;
+  libraryAddCurrent.hidden = libraryBar.hidden || Boolean(currentLibraryAsset) || /^(https?):/.test(pdfUrl);
   pdfTitle = parsed.title || decodeURIComponent(parsed.url).split(/[\\/]/).pop()?.split("?")[0] || "PDF";
   // Note: pageCount may not be accurate until document loads
   totalPages = parsed.pageCount || 1;
@@ -4810,9 +4945,29 @@ app.ontoolresult = async (result: CallToolResult) => {
     const { document, totalBytes } = await loadPdfProgressively(pdfUrl);
     pdfDocument = document;
     totalPages = document.numPages;
-    const savedPage = loadSavedPage();
+    let savedPage: number | null;
+    if (currentLibraryAsset) {
+      const asset = currentLibraryAsset;
+      if (document.fingerprints[0] !== asset.fingerprint) throw new Error("文件指纹与书库记录不一致。");
+      let state: ReadingState;
+      try {
+        const legacy = legacyReadingState(asset.fingerprint, document.numPages);
+        if (legacy) {
+          await callLibrary("library_migrate_state", { assetId: asset.assetId, fingerprint: asset.fingerprint, clientId: legacy.clientId, ...legacy.state });
+        }
+      } catch (error) { libraryMigrationStatus.textContent = `旧记录未迁移，原数据保留：${error instanceof Error ? error.message : String(error)}`; }
+      state = await callLibrary<ReadingState>("library_get_state", { assetId: asset.assetId });
+      savedPage = state.page;
+      currentPage = Math.max(1, Math.min(savedPage ?? parsed.initialPage, totalPages));
+      await readerNavigation.load(document, documentStorageKey()!, { bookmarks: state.bookmarks,
+        change: async (action, page, title) => (await callLibrary<ReadingState>("library_bookmark", { assetId: asset.assetId, action, page, ...(title ? { title } : {}) })).bookmarks });
+      readingStateReady = true;
+      saveLibraryPage(asset, currentPage);
+    } else {
+      savedPage = loadSavedPage();
+      void readerNavigation.load(document, documentStorageKey()!);
+    }
     currentPage = Math.max(1, Math.min(savedPage ?? parsed.initialPage, totalPages));
-    void readerNavigation.load(document, documentStorageKey()!);
     readerNavigation.setCurrentPage(currentPage);
 
     log.info("PDF loaded, pages:", totalPages, "bytes:", totalBytes);
@@ -4891,7 +5046,7 @@ app.ontoolresult = async (result: CallToolResult) => {
       startPolling();
     }
   }
-};
+}
 
 app.onerror = (err: unknown) => {
   log.error("App error:", err);
@@ -5171,20 +5326,23 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
 }
 
 let polling = false;
+let pollGeneration = 0;
+let commandWork: Promise<void> = Promise.resolve();
 
 function startPolling(): void {
   if (polling) return;
   polling = true;
-  pollLoop();
+  void pollLoop(++pollGeneration);
 }
 
-async function pollLoop(): Promise<void> {
-  while (polling && viewUUID) {
+async function pollLoop(generation: number): Promise<void> {
+  while (polling && viewUUID && generation === pollGeneration) {
     try {
       const result = await app.callServerTool({
         name: "poll_pdf_commands",
         arguments: { viewUUID },
       });
+      if (generation !== pollGeneration) return;
       if (result.isError) {
         // Tool not found or server rejected — stop polling entirely rather
         // than spin on a non-recoverable error result (which doesn't throw).
@@ -5197,9 +5355,13 @@ async function pollLoop(): Promise<void> {
         [];
       if (commands.length > 0) {
         log.info(`Received ${commands.length} command(s)`);
-        await processCommands(commands);
+        commandWork = processCommands(commands);
+        await commandWork;
+        commandWork = Promise.resolve();
       }
     } catch (err) {
+      if (generation !== pollGeneration) return;
+      commandWork = Promise.resolve();
       log.error("Poll error:", err);
       // Back off on error to avoid tight error loops
       await new Promise((r) => setTimeout(r, 2000));
@@ -5209,6 +5371,7 @@ async function pollLoop(): Promise<void> {
 
 function stopPolling(): void {
   polling = false;
+  pollGeneration++;
 }
 
 function handleHostContextChanged(ctx: McpUiHostContext) {
@@ -5279,6 +5442,7 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
 
 app.onteardown = async () => {
   log.info("App is being torn down");
+  await readingSaveWork;
   stopPolling();
   // Bump loadGeneration so startPreloading's gen check fails and the
   // loop exits on its next iteration (reuses the reload-abort mechanism).
@@ -5348,6 +5512,7 @@ app.registerTool(
       };
     }
     const info = {
+      ...(currentLibraryAsset ? { libraryAsset: currentLibraryAsset } : {}),
       title: pdfTitle || "Untitled",
       url: pdfUrl,
       currentPage,

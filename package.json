@@ -18,7 +18,9 @@
     "dev": "cross-env NODE_ENV=development concurrently \"npm run watch\" \"npm run serve\"",
     "test": "bun test src/pdf-annotations.test.ts server.test.ts",
     "test:reader": "bun scripts/test-reader-smoke.ts",
-    "test:stdio": "node scripts/test-mcp-stdio.mjs"
+    "test:stdio": "node scripts/test-mcp-stdio.mjs",
+    "test:library": "node scripts/test-library-stdio.mjs",
+    "test:library-ui": "bun scripts/test-library-reader.ts"
   },
   "dependencies": {
     "@cantoo/pdf-lib": "2.6.5",
@@ -55,5 +57,6 @@
   "bin": {
     "mcp-pdf-server": "dist/index.js"
   },
-  "private": true
+  "private": true,
+  "engines": { "node": ">=24" }
 }

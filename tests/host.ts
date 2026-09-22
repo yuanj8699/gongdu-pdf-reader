@@ -10,7 +10,7 @@ const bridge = new AppBridge(null, { name: "Reader smoke-test host", version: "1
   updateModelContext: { text: {} }, message: { text: {} },
 }, {
   hostContext: {
-    toolInfo: { id: initialResult._meta.viewUUID, tool: { name: "display_pdf", inputSchema: { type: "object" } } },
+    toolInfo: { id: initialResult._meta?.viewUUID ?? "library", tool: { name: initialResult.structuredContent.kind === "library" ? "open_library" : "display_pdf", inputSchema: { type: "object" } } },
     theme: "light", displayMode: "inline", availableDisplayModes: ["inline", "fullscreen"],
     locale: "zh-CN", platform: "web",
     containerDimensions: { width: 1100, height: 850 },

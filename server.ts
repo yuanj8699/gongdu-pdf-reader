@@ -55,6 +55,8 @@ const STANDARD_FONT_DATA_PATH = path.join(
   "standard_fonts/",
 ).replace(/\\/g, "/");
 import { z } from "zod";
+import { LibraryService } from "./library.js";
+import { LibraryAssetSchema, registerLibraryTools } from "./library-tools.js";
 
 // =============================================================================
 // Configuration
@@ -1216,6 +1218,7 @@ export async function extractFormSchema(
 // =============================================================================
 
 export interface CreateServerOptions {
+  library?: LibraryService;
   /** PDF opened when the sidebar entrypoint is clicked without arguments. */
   defaultPdfUrl?: string;
 
@@ -1260,6 +1263,21 @@ export interface CreateServerOptions {
 const sharedPdfCache = createPdfCache();
 let cachedAppHtml: string | undefined;
 
+/** Inspect staged bytes before registering an immutable asset; invalid PDFs fail import. */
+export function createLibrary(directory: string): LibraryService {
+  return new LibraryService(directory, async (filePath) => {
+    const size = (await fs.promises.stat(filePath)).size;
+    const transport = new PdfCacheRangeTransport(filePath, size, sharedPdfCache.readPdfRange);
+    const task = getDocument({ range: transport, length: size, disableAutoFetch: true, disableStream: true,
+      standardFontDataUrl: STANDARD_FONT_DATA_PATH, verbosity: VerbosityLevel.ERRORS });
+    try {
+      const document = await Promise.race([task.promise, transport.failed]);
+      if (!document.fingerprints[0]) throw new Error("无法确定 PDF 指纹，未导入。");
+      return { pageCount: document.numPages, fingerprint: document.fingerprints[0] };
+    } finally { await task.destroy(); }
+  });
+}
+
 export function createServer(options: CreateServerOptions = {}): McpServer {
   const { enableInteract = false, useClientRoots = false } = options;
   const debug = options.debug ?? false;
@@ -1279,7 +1297,25 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     );
   }
 
-  const { readPdfRange } = sharedPdfCache;
+  const library = options.library;
+  const resolveReaderUrl = (url: string) => {
+    if (!url.startsWith("library://")) return url;
+    if (!library) throw new Error("书库未启用。");
+    return library.filePath(url.slice("library://".length));
+  };
+  const readPdfRange: PdfCache["readPdfRange"] = (url, offset, byteCount) =>
+    sharedPdfCache.readPdfRange(resolveReaderUrl(url), offset, byteCount);
+  const validateReaderUrl = (url: string) => {
+    if (!url.startsWith("library://")) return validateUrl(url);
+    try { resolveReaderUrl(url); return { valid: true }; }
+    catch (error) { return { valid: false, error: error instanceof Error ? error.message : String(error) }; }
+  };
+  if (library) registerLibraryTools(server, library, RESOURCE_URI, (input) => {
+    if (!isFileUrl(input) && !isLocalPath(input)) throw new Error("本轮仅支持导入本地 PDF。");
+    const validation = validateUrl(input);
+    if (!validation.valid) throw new Error(validation.error);
+    return isFileUrl(input) ? fileUrlToPath(input) : decodeURIComponent(input);
+  });
 
   // Tool: list_pdfs - List available PDFs
   server.registerTool(
@@ -1390,7 +1426,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       _meta: { ui: { visibility: ["app"] } },
     },
     async ({ url, offset, byteCount }): Promise<CallToolResult> => {
-      const validation = validateUrl(url);
+      const validation = validateReaderUrl(url);
       if (!validation.valid) {
         return {
           content: [{ type: "text", text: validation.error! }],
@@ -1467,6 +1503,7 @@ Returns a viewUUID in structuredContent. Pass it to \`interact\`:
 Accepts local files (use list_pdfs), client MCP root directories, or any HTTPS URL.
 Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before display.`,
       inputSchema: z.object({
+        assetId: z.string().optional().describe("Persistent library asset ID; opens that exact immutable file and restores its saved page."),
         url: z
           .string()
           .default(options.defaultPdfUrl ?? DEFAULT_PDF)
@@ -1484,6 +1521,8 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
             }),
       }),
       outputSchema: z.object({
+        libraryAsset: LibraryAssetSchema.optional(),
+        title: z.string().optional(),
         viewUUID: z
           .string()
           .describe(
@@ -1525,12 +1564,15 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
       }),
       _meta: {
         ui: { resourceUri: RESOURCE_URI },
-        "openai/ui": { entrypoints: [{ type: "thread" }] },
+        ...(!library ? { "openai/ui": { entrypoints: [{ type: "thread" }] } } : {}),
       },
     },
-    async ({ url, page, elicit_form_inputs }): Promise<CallToolResult> => {
-      const normalized = isArxivUrl(url) ? normalizeArxivUrl(url) : url;
-      const validation = validateUrl(normalized);
+    async ({ url, assetId, page, elicit_form_inputs }): Promise<CallToolResult> => {
+      assetId ??= url.startsWith("library://") ? url.slice("library://".length) : undefined;
+      if (assetId && !library) return { isError: true, content: [{ type: "text", text: "书库未启用。" }] };
+      const libraryAsset = assetId ? await library!.verify(assetId) : undefined;
+      const normalized = libraryAsset ? `library://${libraryAsset.assetId}` : isArxivUrl(url) ? normalizeArxivUrl(url) : url;
+      const validation = validateReaderUrl(normalized);
 
       if (!validation.valid) {
         return {
@@ -1705,8 +1747,9 @@ URL: ${normalized}`,
         structuredContent: {
           viewUUID: uuid,
           url: normalized,
-          initialPage: page,
+          initialPage: libraryAsset ? library!.state(libraryAsset.assetId).page ?? page : page,
           totalBytes,
+          ...(libraryAsset ? { libraryAsset, title: libraryAsset.title } : {}),
           ...(formFieldValues ? { formFieldValues } : {}),
           ...(fieldInfo.length > 0 ? { formFields: fieldInfo } : {}),
         },
@@ -1714,6 +1757,7 @@ URL: ${normalized}`,
           viewUUID: uuid,
           interactEnabled: !disableInteract,
           writable,
+          libraryEnabled: Boolean(library),
           // Debug: viewer renders this in a floating bubble (--debug flag).
           ...(debug
             ? {
