@@ -1,3 +1,4 @@
+import type { ArxivPaper } from "./arxiv-types.js";
 /** Persistent identity is separate from the transient viewer UUID. */
 export interface LibraryAsset {
   documentId: string;
@@ -10,6 +11,7 @@ export interface LibraryAsset {
   pageCount: number;
   fingerprint: string;
   createdAt: string;
+  source?: ArxivPaper;
 }
 
 export interface Bookmark { page: number; title: string }

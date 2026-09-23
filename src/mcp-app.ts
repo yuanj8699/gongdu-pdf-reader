@@ -802,6 +802,7 @@ const app = new App(
 );
 
 const host = new HostBridge(app);
+let arxivEnabled = false;
 const libraryBar = document.getElementById("library-bar")!;
 const libraryHome = document.getElementById("library-home") as HTMLButtonElement;
 const libraryAddCurrent = document.getElementById("library-add-current") as HTMLButtonElement;
@@ -831,7 +832,7 @@ libraryHome.addEventListener("click", async () => {
   try {
     await readingSaveWork;
     if (readingSaveFailed) return;
-    await queueReaderResult({ content: [], structuredContent: { kind: "library" }, _meta: { libraryEnabled: true } });
+    await queueReaderResult({ content: [], structuredContent: { kind: "library" }, _meta: { libraryEnabled: true, arxivEnabled } });
   } catch (error) {
     librarySaveStatus.textContent = `打开书库失败：${error instanceof Error ? error.message : String(error)}`;
   } finally { libraryHome.disabled = false; }
@@ -4846,6 +4847,7 @@ async function handleReaderResult(result: CallToolResult) {
   viewUUID = undefined; interactEnabled = false;
   librarySaveStatus.textContent = ""; libraryMigrationStatus.textContent = ""; libraryRetrySave.hidden = true;
   libraryBar.hidden = result._meta?.libraryEnabled !== true;
+  arxivEnabled = result._meta?.arxivEnabled === true;
   libraryAddCurrent.hidden = true;
   if ((result.structuredContent as { kind?: string } | undefined)?.kind === "library") {
     currentPage = 1; totalPages = 0; pdfUrl = ""; pdfTitle = undefined;
@@ -4855,7 +4857,7 @@ async function handleReaderResult(result: CallToolResult) {
     } catch {
       librarySaveStatus.textContent = "书库已打开，但客户端未接受新的阅读上下文。";
     }
-    await libraryPanel.show();
+    await libraryPanel.show(arxivEnabled);
     return;
   }
   libraryPanel.hide();

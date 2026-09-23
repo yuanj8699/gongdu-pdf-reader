@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { ArxivService } from "./arxiv.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/express";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import type { McpServer } from "@modelcontextprotocol/server";
@@ -183,12 +184,13 @@ async function main() {
     process.env.LOCALAPPDATA || path.join(os.homedir(), ".local", "share"), "GongduReader",
   );
   const library = createLibrary(libraryDirectory);
+  const arxiv = new ArxivService(library);
   console.error(`[pdf-server] Library: ${library.directory}`);
 
   if (stdio) {
     // Only explicit files/directories are allowed unless client roots are opted in.
     await startStdioServer(() =>
-      createServer({ enableInteract: true, useClientRoots, debug, defaultPdfUrl, library }),
+      createServer({ enableInteract: true, useClientRoots, debug, defaultPdfUrl, library, arxiv }),
     );
   } else {
     // HTTP → client is remote, only honour roots with explicit opt-in
@@ -199,7 +201,7 @@ async function main() {
       );
     }
     await startStreamableHTTPServer(() =>
-      createServer({ useClientRoots, enableInteract, debug, defaultPdfUrl, library }),
+      createServer({ useClientRoots, enableInteract, debug, defaultPdfUrl, library, arxiv }),
     );
   }
 }

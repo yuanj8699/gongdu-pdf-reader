@@ -16,7 +16,7 @@ export interface ReadingContext {
     | { kind: "transient"; uri: string; fingerprint: string | null };
   viewUUID: string | null;
   title: string;
-  source: { uri: string };
+  source: { uri: string; provider?: "arxiv"; id?: string };
   location: { format: "pdf"; pageNumber: number; pageLabel: string; rotation: number;
     coordinateSpace: "rotated-page-top-left-points"; rects: SelectionRect[] };
   selection: { text: string; contextBefore: string; contextAfter: string } | null;
@@ -44,7 +44,8 @@ export function createReadingContext(input: {
     schemaVersion: 1,
     identity: a ? { kind: "library", documentId: a.documentId, versionId: a.versionId, assetId: a.assetId, sha256: a.sha256 }
       : { kind: "transient", uri: input.uri, fingerprint: input.fingerprint ?? null },
-    viewUUID: input.viewUUID ?? null, title: input.title, source: { uri: input.uri },
+    viewUUID: input.viewUUID ?? null, title: input.title,
+    source: a?.source ? { uri: a.source.abstractUrl, provider: "arxiv", id: a.source.id } : { uri: input.uri },
     location: { format: "pdf", pageNumber: input.pageNumber, pageLabel: input.pageLabel ?? String(input.pageNumber),
       rotation: input.rotation, coordinateSpace: "rotated-page-top-left-points", rects: input.rects?.map(r => ({ ...r })) ?? [] },
     selection: input.text ? { text: input.text, contextBefore: "", contextAfter: "" } : null,

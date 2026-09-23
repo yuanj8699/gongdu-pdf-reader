@@ -7,10 +7,13 @@ export const LibraryAssetSchema = z.object({
   documentId: z.string(), versionId: z.string(), assetId: z.string(), title: z.string(),
   fileName: z.string(), sha256: z.string(), byteLength: z.number(), pageCount: z.number(),
   fingerprint: z.string(), createdAt: z.string(),
+  source: z.object({ provider: z.literal("arxiv"), id: z.string(), baseId: z.string(), version: z.number(),
+    title: z.string(), authors: z.array(z.string()), summary: z.string(), published: z.string(), updated: z.string(),
+    abstractUrl: z.string(), pdfUrl: z.string() }).optional(),
 });
 
 export function registerLibraryTools(server: McpServer, library: LibraryService, resourceUri: string,
-  localPath: (input: string) => string) {
+  localPath: (input: string) => string, arxivEnabled = false) {
   const invoke = (operation: () => unknown | Promise<unknown>): Promise<CallToolResult> =>
     Promise.resolve().then(operation).then((data) => ({
       content: [{ type: "text" as const, text: JSON.stringify(data) }],
@@ -23,7 +26,7 @@ export function registerLibraryTools(server: McpServer, library: LibraryService,
     inputSchema: z.object({}),
     annotations: { readOnlyHint: true },
     _meta: { ui: { resourceUri }, "openai/ui": { entrypoints: [{ type: "thread" }] } },
-  }, async () => ({ content: [{ type: "text", text: "本地 PDF 书库" }], structuredContent: { kind: "library" }, _meta: { libraryEnabled: true } }));
+  }, async () => ({ content: [{ type: "text", text: "本地 PDF 书库" }], structuredContent: { kind: "library" }, _meta: { libraryEnabled: true, arxivEnabled } }));
   server.registerTool("library_list", {
     description: "List PDFs imported into the persistent library. Open an entry with display_pdf(assetId).", inputSchema: z.object({}),
     annotations: { readOnlyHint: true },

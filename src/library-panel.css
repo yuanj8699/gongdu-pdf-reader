@@ -17,3 +17,16 @@
 .library-item span { font-size: .8rem; color: var(--text100); }
 .library-item button { justify-self: start; }
 .library-empty { color: var(--text100); padding: 1rem 0; line-height: 1.6; }
+#arxiv-panel { border-top: 1px solid var(--bg200); border-bottom: 1px solid var(--bg200); padding: 1rem 0; }
+#arxiv-panel[hidden] { display: none; }
+#arxiv-panel summary { cursor: pointer; padding: .3rem 0; }
+#arxiv-panel p { font-size: .85rem; line-height: 1.6; overflow-wrap: anywhere; }
+#arxiv-search-form { display: grid; gap: .5rem; margin-top: .8rem; }
+.arxiv-search-row, .arxiv-version-row, .arxiv-jobs-heading { display: flex; gap: .5rem; align-items: center; }
+.arxiv-search-row input { flex: 1; min-width: 0; }
+#arxiv-panel input { background: var(--bg000); color: var(--text000); border: 1px solid var(--bg300); border-radius: .3rem; padding: .5rem; font: inherit; }
+.arxiv-version-row input { width: 4rem; }
+.arxiv-version-row { flex-wrap: wrap; }
+.arxiv-jobs-heading { justify-content: space-between; margin-top: 1rem; }
+.arxiv-jobs-heading h2 { font-size: 1rem; }
+#arxiv-results, #arxiv-jobs { list-style: none; padding: 0; display: grid; gap: .7rem; }

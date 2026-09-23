@@ -16,11 +16,13 @@
     "start": "cross-env NODE_ENV=development npm run build && npm run serve",
     "start:stdio": "cross-env NODE_ENV=development npm run build 1>&2 && npm run serve:stdio",
     "dev": "cross-env NODE_ENV=development concurrently \"npm run watch\" \"npm run serve\"",
-    "test": "bun test src/pdf-annotations.test.ts src/reading-context.test.ts server.test.ts",
+    "test": "bun test src/pdf-annotations.test.ts src/reading-context.test.ts server.test.ts arxiv.test.ts",
     "test:reader": "bun scripts/test-reader-smoke.ts",
     "test:stdio": "node scripts/test-mcp-stdio.mjs",
     "test:library": "node scripts/test-library-stdio.mjs",
-    "test:library-ui": "bun scripts/test-library-reader.ts"
+    "test:library-ui": "bun scripts/test-library-reader.ts",
+    "test:arxiv-ui": "bun scripts/test-arxiv-reader.ts",
+    "test:arxiv-live": "node scripts/test-arxiv-live.mjs"
   },
   "dependencies": {
     "@cantoo/pdf-lib": "2.6.5",
@@ -31,6 +33,7 @@
     "@modelcontextprotocol/server": "2.0.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
+    "fast-xml-parser": "5.11.1",
     "pdfjs-dist": "5.4.530",
     "zod": "^4.2.0"
   },
@@ -58,5 +61,7 @@
     "mcp-pdf-server": "dist/index.js"
   },
   "private": true,
-  "engines": { "node": ">=24" }
+  "engines": {
+    "node": ">=24"
+  }
 }

@@ -131,6 +131,14 @@ Codex 官方 app-server 提供 `config/mcpServer/reload`：重读磁盘配置，
 
 ## 直接调试 MCP 服务
 
+新版书库已包含 arXiv 搜索。连接刷新后，在“从 arXiv 找论文”中输入关键词或论文编号，
+选择版本并下载；任务完成后点“打开论文”。模型也可先 `arxiv_search` / `arxiv_resolve`，
+再用明确含 `vN` 的编号调用 `arxiv_download`。工具返回排队任务不表示入库完成，
+界面会显示进度；完成后使用返回的 `assetId` 打开。
+
+下载只在本机服务运行时继续，关闭阅读面板不取消任务。重启后中断任务可以手动重新下载，
+已完成资料仍可离线阅读。接入不需要额外填写 arXiv 账号。
+
 需要 MCP Inspector 或独立测试 host 时，可运行：
 
 ```powershell

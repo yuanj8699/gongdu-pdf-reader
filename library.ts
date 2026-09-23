@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Bookmark, LibraryAsset, LibraryEntry, ReadingState } from "./src/library-types.js";
+import type { ArxivPaper, ArxivJob } from "./src/arxiv-types.js";
 
 export const MAX_IMPORT_BYTES = 512 * 1024 * 1024;
 export const UPLOAD_CHUNK_BYTES = 512 * 1024;
@@ -31,8 +32,9 @@ export class LibraryService {
     this.db = new DatabaseSync(path.join(this.directory, "library.sqlite"));
     this.db.exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;");
     const version = (this.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-    if (version > 1) { this.db.close(); throw new Error("书库版本较新，请使用新版阅读器。"); }
-    this.db.exec(`BEGIN IMMEDIATE;
+    if (version > 2) { this.db.close(); throw new Error("书库版本较新，请使用新版阅读器。"); }
+    if (version === 0) {
+      this.db.exec(`BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, title TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS versions (id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES documents(id));
       CREATE TABLE IF NOT EXISTS assets (
@@ -48,6 +50,11 @@ export class LibraryService {
         asset_id TEXT NOT NULL REFERENCES assets(id), client_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
         PRIMARY KEY(asset_id,client_id,fingerprint));
       PRAGMA user_version=1; COMMIT;`);
+    }
+    if (version < 2) {
+      try { this.upgradeToV2(); }
+      catch (error) { this.db.close(); throw error; }
+    }
     // Remove only stale staging files created by this service, never live imports.
     for (const name of fs.readdirSync(path.join(this.directory, "tmp"))) {
       if (!/^[a-f0-9-]{36}\.part$/.test(name)) continue;
@@ -56,16 +63,57 @@ export class LibraryService {
     }
   }
 
+  private upgradeToV2() {
+    // A blob can serve distinct paper versions; assets retain their own version identities.
+    this.db.exec("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE;");
+    try {
+      this.db.exec(`CREATE TABLE assets_v2 (
+        id TEXT PRIMARY KEY, version_id TEXT NOT NULL REFERENCES versions(id), sha256 TEXT NOT NULL,
+        file_name TEXT NOT NULL, byte_length INTEGER NOT NULL, page_count INTEGER NOT NULL,
+        fingerprint TEXT NOT NULL, created_at TEXT NOT NULL);
+        INSERT INTO assets_v2 SELECT * FROM assets;
+        DROP TABLE assets;
+        ALTER TABLE assets_v2 RENAME TO assets;
+        CREATE INDEX assets_hash ON assets(sha256);
+        CREATE TABLE arxiv_sources (
+          base_id TEXT NOT NULL, revision INTEGER NOT NULL, asset_id TEXT NOT NULL UNIQUE REFERENCES assets(id),
+          metadata TEXT NOT NULL, PRIMARY KEY(base_id,revision));
+        CREATE TABLE arxiv_jobs (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at TEXT NOT NULL);
+        PRAGMA user_version=2;`);
+      if (this.db.prepare("PRAGMA foreign_key_check").all().length) throw new Error("书库升级校验失败，已回滚。");
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    finally { this.db.exec("PRAGMA foreign_keys=ON"); }
+  }
+
+  private withSource(row: LibraryAsset): LibraryAsset {
+    const source = this.db.prepare("SELECT metadata FROM arxiv_sources WHERE asset_id=?").get(row.assetId) as { metadata: string } | undefined;
+    if (!source) return row;
+    const paper = JSON.parse(source.metadata) as ArxivPaper;
+    return { ...row, title: paper.title, source: paper };
+  }
+  arxivAsset(baseId: string, revision: number): LibraryAsset | undefined {
+    const row = this.db.prepare("SELECT asset_id FROM arxiv_sources WHERE base_id=? AND revision=?").get(baseId, revision) as { asset_id: string } | undefined;
+    return row ? this.asset(row.asset_id) : undefined;
+  }
+  jobs(): ArxivJob[] {
+    return (this.db.prepare("SELECT data FROM arxiv_jobs ORDER BY updated_at DESC").all() as { data: string }[]).map(r => JSON.parse(r.data));
+  }
+  saveJob(job: ArxivJob): void {
+    this.db.prepare("INSERT INTO arxiv_jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at")
+      .run(job.jobId, JSON.stringify(job), job.updatedAt);
+  }
+
   list(): LibraryEntry[] {
     return (this.db.prepare(`${assetQuery} LEFT JOIN reading_positions r ON r.asset_id=a.id
       ORDER BY COALESCE(r.updated_at,a.created_at) DESC`).all() as LibraryAsset[]).map((row) => ({
-      ...row, lastPage: this.state(String(row.assetId)).page,
+      ...this.withSource(row), lastPage: this.state(String(row.assetId)).page,
     })) as unknown as LibraryEntry[];
   }
   asset(assetId: string): LibraryAsset {
     const row = this.db.prepare(`${assetQuery} WHERE a.id=?`).get(assetId);
     if (!row) throw new Error("未找到这份书库资料。");
-    return row as unknown as LibraryAsset;
+    return this.withSource(row as unknown as LibraryAsset);
   }
   filePath(assetId: string): string { return path.join(this.directory, "blobs", this.asset(assetId).sha256); }
   async verify(assetId: string): Promise<LibraryAsset> {
@@ -161,24 +209,35 @@ export class LibraryService {
       return await this.commitFile(upload.path, upload.name);
     } finally { fs.rmSync(upload.path, { force: true }); this.uploads.delete(uploadId); }
   }
-  private async commitFile(staged: string, fileName: string): Promise<LibraryAsset> {
+  async importArxiv(staged: string, source: ArxivPaper, signal: AbortSignal): Promise<LibraryAsset> {
+    return this.commitFile(staged, `${source.id.replaceAll("/", "_")}.pdf`, source, signal);
+  }
+  private async commitFile(staged: string, fileName: string, source?: ArxivPaper, signal?: AbortSignal): Promise<LibraryAsset> {
     const byteLength = (await fs.promises.stat(staged)).size;
     if (!byteLength || byteLength > MAX_IMPORT_BYTES) throw new Error("PDF 文件大小超出支持范围。");
     const { pageCount, fingerprint } = await this.inspectPdf(staged);
     const sha256 = await hashFile(staged);
+    signal?.throwIfAborted();
     const blob = path.join(this.directory, "blobs", sha256);
     try { await fs.promises.link(staged, blob); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
     if (await hashFile(blob) !== sha256) throw new Error("书库中已有同名原件但校验失败，未覆盖。");
+    signal?.throwIfAborted();
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const existing = this.db.prepare("SELECT id FROM assets WHERE sha256=?").get(sha256) as { id: string } | undefined;
+      const existing = (source
+        ? this.db.prepare("SELECT asset_id AS id FROM arxiv_sources WHERE base_id=? AND revision=?").get(source.baseId, source.version)
+        : this.db.prepare("SELECT id FROM assets WHERE sha256=? ORDER BY created_at LIMIT 1").get(sha256)) as { id: string } | undefined;
       const assetId = existing ? String(existing.id) : randomUUID();
+      if (source && existing && this.asset(assetId).sha256 !== sha256) throw new Error("同一 arXiv 版本返回了不同文件，未覆盖已保存的原件。");
       if (!existing) {
-        const documentId = randomUUID(), versionId = randomUUID();
-        this.db.prepare("INSERT INTO documents VALUES(?,?)").run(documentId, fileName);
+        const previous = source ? this.db.prepare(`SELECT v.document_id FROM arxiv_sources s JOIN assets a ON a.id=s.asset_id
+          JOIN versions v ON v.id=a.version_id WHERE s.base_id=? LIMIT 1`).get(source.baseId) as { document_id: string } | undefined : undefined;
+        const documentId = previous?.document_id ?? randomUUID(), versionId = randomUUID();
+        if (!previous) this.db.prepare("INSERT INTO documents VALUES(?,?)").run(documentId, source?.title ?? fileName);
         this.db.prepare("INSERT INTO versions VALUES(?,?)").run(versionId, documentId);
         this.db.prepare("INSERT INTO assets VALUES(?,?,?,?,?,?,?,?)").run(assetId, versionId, sha256, fileName, byteLength, pageCount, fingerprint, new Date().toISOString());
+        if (source) this.db.prepare("INSERT INTO arxiv_sources VALUES(?,?,?,?)").run(source.baseId, source.version, assetId, JSON.stringify(source));
       }
       this.db.exec("COMMIT");
       return this.asset(assetId);

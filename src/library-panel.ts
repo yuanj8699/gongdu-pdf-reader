@@ -1,6 +1,7 @@
 import type { LibraryAsset, LibraryEntry, ReadingState } from "./library-types.js";
 import { uint8ArrayToBase64 } from "./pdf-annotations.js";
 import "./library-panel.css";
+import { createArxivPanel } from "./arxiv-panel.js";
 
 export type LibraryCall = <T>(name: string, args: Record<string, unknown>) => Promise<T>;
 
@@ -31,6 +32,7 @@ export function createLibraryPanel(container: HTMLElement, call: LibraryCall, op
     <label class="library-import">导入本地 PDF<input id="library-file" type="file" accept="application/pdf,.pdf"></label>
     <p class="library-note">原件、阅读位置和书签保存在本机书库。支持 512 MB 以内的 PDF。</p>
     <div class="library-progress"><p id="library-status" role="status" aria-live="polite"></p><button id="library-cancel" type="button" hidden>取消导入</button></div>
+    <section id="arxiv-panel" hidden aria-label="arXiv 论文"></section>
     <ul id="library-list" aria-label="书库资料"></ul>`;
   const input = container.querySelector<HTMLInputElement>("#library-file")!;
   const list = container.querySelector<HTMLUListElement>("#library-list")!;
@@ -54,7 +56,7 @@ export function createLibraryPanel(container: HTMLElement, call: LibraryCall, op
       item.dataset.assetId = asset.assetId;
       const title = document.createElement("strong"); title.textContent = asset.title;
       const detail = document.createElement("span");
-      detail.textContent = `${asset.pageCount} 页 · ${(asset.byteLength / 1024 / 1024).toFixed(1)} MB${asset.lastPage ? ` · 上次读到第 ${asset.lastPage} 页` : ""}`;
+      detail.textContent = `${asset.source ? `${asset.source.id} · ` : ""}${asset.pageCount} 页 · ${(asset.byteLength / 1024 / 1024).toFixed(1)} MB${asset.lastPage ? ` · 上次读到第 ${asset.lastPage} 页` : ""}`;
       const button = document.createElement("button");
       button.type = "button"; button.textContent = asset.lastPage ? "继续阅读" : "开始阅读";
       button.setAttribute("aria-label", `${button.textContent}：${asset.title}`);
@@ -98,9 +100,11 @@ export function createLibraryPanel(container: HTMLElement, call: LibraryCall, op
       if (uploadId) await call("library_cancel_upload", { uploadId }).catch(() => {});
     } finally { importing = false; input.disabled = false; input.value = ""; cancel.hidden = true; }
   });
-  return { async show() {
+  const arxiv = createArxivPanel(container.querySelector("#arxiv-panel")!, call, refresh, openAsset);
+  return { async show(arxivEnabled = false) {
     container.hidden = false;
     try { await refresh(); }
     catch (error) { status.textContent = `读取书库失败：${message(error)}`; }
-  }, hide() { container.hidden = true; } };
+    await arxiv.show(arxivEnabled);
+  }, hide() { container.hidden = true; arxiv.hide(); } };
 }
