@@ -60,6 +60,7 @@ import { LibraryAssetSchema, registerLibraryTools } from "./library-tools.js";
 import { ReferenceTargetSchema, PdfPageSchema } from "./src/reading-context.js";
 import type { ArxivService } from "./arxiv.js";
 import { registerArxivTools } from "./arxiv-tools.js";
+import { LocalLibrary, registerLocalLibraryTools } from "./local-library.js";
 
 // =============================================================================
 // Configuration
@@ -1225,6 +1226,7 @@ export async function extractFormSchema(
 export interface CreateServerOptions {
   library?: LibraryService;
   arxiv?: ArxivService;
+  localLibraryDirectories?: string[];
   /** PDF opened when the sidebar entrypoint is clicked without arguments. */
   defaultPdfUrl?: string;
 
@@ -1323,6 +1325,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     return isFileUrl(input) ? fileUrlToPath(input) : decodeURIComponent(input);
   }, Boolean(options.arxiv));
   if (options.arxiv) registerArxivTools(server, options.arxiv);
+  if (library) registerLocalLibraryTools(server, new LocalLibrary(options.localLibraryDirectories ?? [], library));
 
   // Tool: list_pdfs - List available PDFs
   server.registerTool(

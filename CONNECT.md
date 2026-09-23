@@ -31,8 +31,19 @@ npm run build
 .\scripts\install-mcp.ps1 -PdfPath 'D:\Learning\paper.pdf', 'D:\Learning\book.pdf'
 ```
 
-脚本只接受已经存在的 `.pdf` 文件，不接受目录。再次执行会更新同名连接的文件
+`-PdfPath` 只接受已经存在的 `.pdf` 文件，不接受目录。再次执行会更新同名连接的文件
 列表。可加 `-WhatIf` 预览注册动作，或用 `-ServerName` 选择另一个连接名。
+
+连接本地文件夹时使用独立的只读选项，可和 `-PdfPath` 同时使用：
+
+```powershell
+.\scripts\install-mcp.ps1 -LibraryPath 'D:\Learning\Books'
+```
+
+它注册 `--library-dir=<绝对路径>`，不会授权原目录的写入。“我的书库”中可扫描、
+批量入库和重新扫描新下载的 PDF；入库后使用独立副本和持久阅读记录。
+每次注册请传入全部需要保留的文件夹。直接将目录作为裸 CLI 参数是旧的读写授权方式，
+不应用于只读本地书库。账号登录、在线搜索和下载不属于此文件夹连接功能。
 
 检查保存的配置：
 

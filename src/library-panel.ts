@@ -2,6 +2,7 @@ import type { LibraryAsset, LibraryEntry, ReadingState } from "./library-types.j
 import { uint8ArrayToBase64 } from "./pdf-annotations.js";
 import "./library-panel.css";
 import { createArxivPanel } from "./arxiv-panel.js";
+import { createLocalLibraryPanel } from "./local-library-panel.js";
 
 export type LibraryCall = <T>(name: string, args: Record<string, unknown>) => Promise<T>;
 
@@ -32,6 +33,7 @@ export function createLibraryPanel(container: HTMLElement, call: LibraryCall, op
     <label class="library-import">导入本地 PDF<input id="library-file" type="file" accept="application/pdf,.pdf"></label>
     <p class="library-note">原件、阅读位置和书签保存在本机书库。支持 512 MB 以内的 PDF。</p>
     <div class="library-progress"><p id="library-status" role="status" aria-live="polite"></p><button id="library-cancel" type="button" hidden>取消导入</button></div>
+    <section id="local-library-panel" hidden aria-label="本地文件夹"></section>
     <section id="arxiv-panel" hidden aria-label="arXiv 论文"></section>
     <ul id="library-list" aria-label="书库资料"></ul>`;
   const input = container.querySelector<HTMLInputElement>("#library-file")!;
@@ -101,10 +103,12 @@ export function createLibraryPanel(container: HTMLElement, call: LibraryCall, op
     } finally { importing = false; input.disabled = false; input.value = ""; cancel.hidden = true; }
   });
   const arxiv = createArxivPanel(container.querySelector("#arxiv-panel")!, call, refresh, openAsset);
+  const local = createLocalLibraryPanel(container.querySelector("#local-library-panel")!, call, refresh);
   return { async show(arxivEnabled = false) {
     container.hidden = false;
     try { await refresh(); }
     catch (error) { status.textContent = `读取书库失败：${message(error)}`; }
+    await local.show();
     await arxiv.show(arxivEnabled);
   }, hide() { container.hidden = true; arxiv.hide(); } };
 }

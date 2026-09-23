@@ -1,6 +1,7 @@
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string[]]$PdfPath,
+    [string[]]$LibraryPath,
     [ValidatePattern('^[A-Za-z0-9_-]+$')]
     [string]$ServerName = 'pdf_reader'
 )
@@ -29,6 +30,11 @@ $resolvedPdfs = @(
 $nodePath = @(Get-Command node.exe -CommandType Application -ErrorAction Stop)[0].Source
 $codexPath = @(Get-Command codex.exe -CommandType Application -ErrorAction Stop)[0].Source
 $serverArgs = @('mcp', 'add', $ServerName, '--', $nodePath, $entryPath, '--stdio') + $resolvedPdfs
+foreach ($directory in $LibraryPath) {
+    $item = Get-Item -LiteralPath $directory
+    if (-not $item.PSIsContainer) { throw "Pass an existing library folder: $directory" }
+    $serverArgs += "--library-dir=$($item.FullName)"
+}
 
 if ($PSCmdlet.ShouldProcess("Codex MCP server '$ServerName'", 'Add or update the local PDF reader')) {
     & $codexPath @serverArgs
@@ -36,6 +42,7 @@ if ($PSCmdlet.ShouldProcess("Codex MCP server '$ServerName'", 'Add or update the
         throw "Codex MCP registration failed (exit $LASTEXITCODE)."
     }
     Write-Host "Registered $ServerName with $($resolvedPdfs.Count) PDF file(s)."
+    if ($LibraryPath) { Write-Host "Connected $($LibraryPath.Count) read-only library folder(s)." }
     Write-Host 'The host starts the stdio process when it connects; no separate server window is needed.'
     Write-Host 'See CONNECT.md for refreshing the current task and verifying the embedded reader.'
 }

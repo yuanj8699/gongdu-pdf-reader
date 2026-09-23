@@ -20,6 +20,7 @@
     "test:reader": "bun scripts/test-reader-smoke.ts",
     "test:stdio": "node scripts/test-mcp-stdio.mjs",
     "test:library": "node scripts/test-library-stdio.mjs",
+    "test:local-library": "node scripts/test-local-library.mjs",
     "test:library-ui": "bun scripts/test-library-reader.ts",
     "test:arxiv-ui": "bun scripts/test-arxiv-reader.ts",
     "test:arxiv-live": "node scripts/test-arxiv-live.mjs"

@@ -30,3 +30,13 @@
 .arxiv-jobs-heading { justify-content: space-between; margin-top: 1rem; }
 .arxiv-jobs-heading h2 { font-size: 1rem; }
 #arxiv-results, #arxiv-jobs { list-style: none; padding: 0; display: grid; gap: .7rem; }
+#local-library-panel { padding: 1rem 0; border-top: 1px solid var(--bg200); }
+#local-library-panel[hidden] { display: none; }
+#local-library-panel summary { cursor: pointer; margin-bottom: .7rem; }
+#local-library-panel label { display: grid; gap: .4rem; }
+#local-library-root { max-width: 100%; width: 100%; min-width: 0; color: var(--text000); background: var(--bg000); padding: .5rem; border: 1px solid var(--bg300); }
+.local-library-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .6rem; }
+#local-library-status, .local-library-file { font-size: .85rem; overflow-wrap: anywhere; }
+#local-library-files { list-style: none; padding: 0; display: grid; gap: .7rem; max-height: 320px; overflow: auto; }
+.local-library-file { display: grid; gap: .4rem; padding: .7rem; border: 1px solid var(--bg200); }
+.local-library-file button { justify-self: start; }

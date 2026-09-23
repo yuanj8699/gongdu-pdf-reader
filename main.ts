@@ -100,6 +100,7 @@ function parseArgs(): {
   useClientRoots: boolean;
   enableInteract: boolean;
   debug: boolean;
+  localLibraryDirectories: string[];
 } {
   const args = process.argv.slice(2);
   const urls: string[] = [];
@@ -107,9 +108,14 @@ function parseArgs(): {
   let useClientRoots = false;
   let enableInteract = false;
   let debug = false;
+  const localLibraryDirectories: string[] = [];
 
   for (const arg of args) {
-    if (arg === "--stdio") {
+    if (arg.startsWith("--library-dir=")) {
+      const directory = path.resolve(arg.slice("--library-dir=".length));
+      if (!fs.statSync(directory).isDirectory()) throw new Error(`Not a library directory: ${directory}`);
+      localLibraryDirectories.push(directory);
+    } else if (arg === "--stdio") {
       stdio = true;
     } else if (arg === "--use-client-roots") {
       useClientRoots = true;
@@ -147,11 +153,12 @@ function parseArgs(): {
     useClientRoots,
     enableInteract,
     debug,
+    localLibraryDirectories,
   };
 }
 
 async function main() {
-  const { urls, stdio, useClientRoots, enableInteract, debug } = parseArgs();
+  const { urls, stdio, useClientRoots, enableInteract, debug, localLibraryDirectories } = parseArgs();
 
   // Register local files in whitelist
   for (const url of urls) {
@@ -190,7 +197,7 @@ async function main() {
   if (stdio) {
     // Only explicit files/directories are allowed unless client roots are opted in.
     await startStdioServer(() =>
-      createServer({ enableInteract: true, useClientRoots, debug, defaultPdfUrl, library, arxiv }),
+      createServer({ enableInteract: true, useClientRoots, debug, defaultPdfUrl, library, arxiv, localLibraryDirectories }),
     );
   } else {
     // HTTP → client is remote, only honour roots with explicit opt-in
@@ -201,7 +208,7 @@ async function main() {
       );
     }
     await startStreamableHTTPServer(() =>
-      createServer({ useClientRoots, enableInteract, debug, defaultPdfUrl, library, arxiv }),
+      createServer({ useClientRoots, enableInteract, debug, defaultPdfUrl, library, arxiv, localLibraryDirectories }),
     );
   }
 }

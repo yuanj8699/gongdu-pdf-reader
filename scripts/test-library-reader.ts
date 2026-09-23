@@ -12,9 +12,13 @@ const artifacts = path.join(root, "tests/.artifacts");
 await fs.mkdir(artifacts, { recursive: true });
 const directory = await fs.mkdtemp(path.join(artifacts, "library-test-"));
 const fixture = path.join(root, "tests/fixtures/reader-smoke.pdf");
+const localSource = path.join(directory, "source");
+await fs.mkdir(path.join(localSource, "nested"), { recursive: true });
+await fs.copyFile(fixture, path.join(localSource, "nested", "book.pdf"));
+await fs.writeFile(path.join(localSource, "broken.pdf"), "not a PDF");
 allowedLocalFiles.add(fixture);
 let library = createLibrary(directory);
-let server = createServer({ enableInteract: true, library });
+let server = createServer({ enableInteract: true, library, localLibraryDirectories: [localSource] });
 let client = new Client({ name: "library-browser-test", version: "1" });
 async function connect() {
   const [a, b] = InMemoryTransport.createLinkedPair();
@@ -216,7 +220,7 @@ try {
   for (const id of viewIds) stopFileWatch(id);
   await client.close(); await server.close(); library.close();
   library = createLibrary(directory);
-  server = createServer({ enableInteract: true, library });
+  server = createServer({ enableInteract: true, library, localLibraryDirectories: [localSource] });
   client = new Client({ name: "library-browser-restart", version: "1" });
   await connect();
   context = await browser.newContext({ viewport: { width: 380, height: 850 } });
@@ -234,6 +238,24 @@ try {
   await expect(view.locator('[data-bookmark-page="2"]')).toHaveCount(0);
   await page.screenshot({ path: path.join(artifacts, "library-restored-bookmarks.png") });
   check("reopened SQLite plus fresh browser storage restores page and bookmarks in 380px sidebar");
+  await view.locator("#library-home").click();
+  await expect(view.locator("#local-library-panel")).toBeVisible();
+  await view.locator("#local-library-scan").click();
+  await expect(view.locator("#local-library-status")).toContainText("找到 2 份 PDF");
+  await view.locator("#local-library-import").click();
+  await expect(view.locator("#local-library-status")).toContainText("1 份已就绪，1 份失败");
+  await expect(view.locator(".library-item")).toHaveCount(2);
+  assert.deepEqual(await fs.readFile(path.join(localSource, "nested", "book.pdf")), await fs.readFile(fixture));
+  assert.equal(library.state(asset.assetId).page, 3);
+  await fs.copyFile(fixture, path.join(localSource, "added.pdf"));
+  await view.locator("#local-library-scan").click();
+  await expect(view.locator("#local-library-files li")).toHaveCount(3);
+  const layout = await page.frames().find(f => f.url().endsWith("/app"))!.evaluate(() => ({
+    width: document.documentElement.clientWidth, content: document.documentElement.scrollWidth,
+  }));
+  assert.ok(layout.content <= layout.width + 1, "folder controls overflow sidebar");
+  await page.screenshot({ path: path.join(artifacts, "local-library-sidebar.png") });
+  check("380px local-folder scan, batch partial failure, deduplication and rescan without changing source or progress");
   assert.deepEqual(errors, []);
   console.log("Library UI checks passed. Real PDF, SQLite and MCP; host messaging is simulated.");
 } catch (error) {
