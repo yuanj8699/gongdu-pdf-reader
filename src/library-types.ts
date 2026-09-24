@@ -1,4 +1,5 @@
 import type { ArxivPaper } from "./arxiv-types.js";
+import type { GitHubSource } from "./github-types.js";
 /** Persistent identity is separate from the transient viewer UUID. */
 export interface LibraryAsset {
   documentId: string;
@@ -12,6 +13,7 @@ export interface LibraryAsset {
   fingerprint: string;
   createdAt: string;
   source?: ArxivPaper;
+  githubSource?: GitHubSource;
 }
 
 export interface Bookmark { page: number; title: string }

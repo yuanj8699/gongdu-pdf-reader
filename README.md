@@ -17,6 +17,8 @@
 - 打开能确定归属的文件时迁移旧指纹页码和书签；原记录保留，重复迁移不复活已删除书签。
 - 选区问题带资料、版本、文件编号；批注暂时继续按 PDF 指纹保存在浏览器。
 - arXiv 关键词/编号搜索、确定版本下载、进度与取消；论文入库后直接在现有阅读器打开。
+- GitHub 搜索、收藏／我的仓库、固定提交的目录浏览；导入 PDF、Markdown、UTF-8 代码，保存来源和阅读位置。
+- Markdown 排版／源码切换、代码行号与语法高亮；选区问题带仓库、文件路径、提交和源文件行范围。
 - 保留官方批注、表单填写、带批注 PDF 导出与明确的保存操作。
 
 阅读器本身不运行语言模型。解释由所在聊天的模型给出；普通浏览器测试宿主只验证消息，不生成假回答。
@@ -79,6 +81,7 @@ npm run test:library
 npm run test:local-library
 npm run test:library-ui
 npm run test:arxiv-ui
+npm run test:github-ui
 # 可选：访问真实 arXiv，下载测试论文到临时书库并清理
 npm run test:arxiv-live
 ```
@@ -151,7 +154,7 @@ arXiv 来源则按论文编号归为同一资料，每个 `vN` 保留独立版�
 - P2 验证：三条上下文路径一致、错误窗口/版本/文件和越界页码拒绝、真实旋转 PDF 与罗马页码、
   输入页码时重绘不覆盖输入，以及宿主拒绝/超时提示和排队上下文顺序。超时单测注入请求错误，
   未将其表述为真实桌面网络故障测试。
-- 下一阶段：GitHub 公共仓库与账号、EPUB、经验证的 Z-Library 账号链路；未新增云端宿主适配。
+- 下一阶段：EPUB、经验证的 Z-Library 账号链路；未新增云端宿主适配。
 
 ## arXiv 来源（P3）
 
@@ -185,6 +188,46 @@ API 请求间隔至少 3.1 秒，元数据超时 30 秒、PDF 下载超时 180 �
 
 接口与请求频率依据 [arXiv API 手册](https://info.arxiv.org/help/api/user-manual.html)
 及 [API 使用条款](https://info.arxiv.org/help/api/tou.html)。此阶段无需 arXiv 账号。
+
+## GitHub 来源（P4）
+
+入口：**＋ → PDF 阅读器 → 从 GitHub 找资料**。输入仓库首页链接或 `owner/repo`，可指定分支、标签或提交；
+也可以搜索仓库。打开仓库时将分支解析为确定的 40 位提交，后续目录浏览、下载和引用始终使用该提交。
+需要看最新版本时重新打开仓库。点击目录进入下一层，点击文件下载入库并阅读；不克隆整个仓库。
+
+公共仓库无需账号。收藏、我的仓库和私有内容读取本机 GitHub CLI 的授权：
+
+```powershell
+gh auth login --hostname github.com --web --git-protocol https
+```
+
+在浏览器完成授权后，点击“刷新账号”，无需向聊天或阅读器粘贴令牌。已配置的 `GH_TOKEN`／`GITHUB_TOKEN`
+环境变量优先于 CLI 凭据；应用不保存令牌、不读取 Codex GitHub 连接器的凭据。私有仓库要求相应的读取权限，
+组织还可能要求 SSO 授权；细粒度令牌需配置目标仓库 Contents 只读权限。授权失效明确报错，不静默切换账号。
+退出本机账号使用 `gh auth logout --hostname github.com`；已入库文件仍在本机保留并可离线阅读。
+
+PDF 上限 100 MB，文本上限 1 MB／10000 行。仅支持 UTF-8 文本；不读取符号链接、子模块、Git LFS 实体或其他
+二进制文件。下载仅请求 `api.github.com`，不跟随重定向，使用 Git blob SHA 校验内容；迁移仓库请改填新地址。
+GitHub 限流、权限不足、网络超时会显示错误，用户可手动重试。
+
+PDF 复用原阅读器。Markdown 支持排版预览和源码，代码保留行号并按行高亮；过长的行显示原始文本。
+Markdown 的脚本、嵌入和图片不会加载，图片可点击“GitHub 原文”查看。外链只在用户点击时交给宿主打开。
+源码模式给出所选行范围，排版模式给出所在 Markdown 段落的源文件行范围；引用不会把段落范围冒充精确字符位置。
+文本支持自动上下文同步及显式选区提问；PDF 的服务端 `reader_navigate` 仍只处理 PDF 页码，文本可用行号框跳转。
+文本暂不提供全文搜索、批注或书签界面。
+
+SQLite 自动事务升级至 v3，新增 `github_sources`；旧 PDF、arXiv 阅读位置和书签保留。同一仓库路径不同提交共用
+资料编号、使用独立版本与文件编号，即使字节相同也不混用阅读位置。文本在位置存储中以源文件行号保存，
+PDF 仍按文件页码保存。所有原件在现有独立书库目录，源码或凭据不进入 Obsidian 知识库。
+
+验证：GitHub API 固定样例覆盖公共／授权读取、版本隔离、旧书库升级、重启离线读取、错误凭据、重定向、
+损坏／超大／二进制文件。真实 MCP＋SQLite＋浏览器覆盖 380px 侧栏中收藏→目录→Markdown／代码／PDF→
+选区问答→返回书库、消息拒收提示和位置恢复。GitHub 响应在这些检查中为固定样例，不冒充真实账号验证。
+本次真实公共 GitHub API 请求遭遇匿名额度限流；登录后的收藏和私有仓库链路、当前桌面刷新后的新入口仍待实测。
+
+接口依据：[GitHub 仓库内容](https://docs.github.com/en/rest/repos/contents)、
+[Git Trees](https://docs.github.com/en/rest/git/trees)、[Git Blobs](https://docs.github.com/en/rest/git/blobs)、
+[收藏仓库](https://docs.github.com/en/rest/activity/starring)。
 
 ## 来源
 

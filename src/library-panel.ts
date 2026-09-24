@@ -3,6 +3,7 @@ import { uint8ArrayToBase64 } from "./pdf-annotations.js";
 import "./library-panel.css";
 import { createArxivPanel } from "./arxiv-panel.js";
 import { createLocalLibraryPanel } from "./local-library-panel.js";
+import { createGithubPanel } from "./github-panel.js";
 
 export type LibraryCall = <T>(name: string, args: Record<string, unknown>) => Promise<T>;
 
@@ -28,13 +29,14 @@ export function legacyReadingState(fingerprint: string, pageCount: number): { cl
 }
 
 export function createLibraryPanel(container: HTMLElement, call: LibraryCall, openAsset: (assetId: string) => Promise<void>) {
-  container.innerHTML = `<div class="library-heading"><div><h1>我的书库</h1><p>把本地 PDF 收进书库，接着上次读。</p></div>
+  container.innerHTML = `<div class="library-heading"><div><h1>我的书库</h1><p>收好 PDF、论文和仓库资料，接着上次读。</p></div>
     <button type="button" id="library-refresh">刷新</button></div>
     <label class="library-import">导入本地 PDF<input id="library-file" type="file" accept="application/pdf,.pdf"></label>
     <p class="library-note">原件、阅读位置和书签保存在本机书库。支持 512 MB 以内的 PDF。</p>
     <div class="library-progress"><p id="library-status" role="status" aria-live="polite"></p><button id="library-cancel" type="button" hidden>取消导入</button></div>
     <section id="local-library-panel" hidden aria-label="本地文件夹"></section>
     <section id="arxiv-panel" hidden aria-label="arXiv 论文"></section>
+    <section id="github-panel" hidden aria-label="GitHub 仓库"></section>
     <ul id="library-list" aria-label="书库资料"></ul>`;
   const input = container.querySelector<HTMLInputElement>("#library-file")!;
   const list = container.querySelector<HTMLUListElement>("#library-list")!;
@@ -58,7 +60,8 @@ export function createLibraryPanel(container: HTMLElement, call: LibraryCall, op
       item.dataset.assetId = asset.assetId;
       const title = document.createElement("strong"); title.textContent = asset.title;
       const detail = document.createElement("span");
-      detail.textContent = `${asset.source ? `${asset.source.id} · ` : ""}${asset.pageCount} 页 · ${(asset.byteLength / 1024 / 1024).toFixed(1)} MB${asset.lastPage ? ` · 上次读到第 ${asset.lastPage} 页` : ""}`;
+      const unit = asset.githubSource && asset.githubSource.format !== "pdf" ? "行" : "页";
+      detail.textContent = `${asset.githubSource ? `GitHub · ${asset.githubSource.commit.slice(0, 12)} · ` : asset.source ? `${asset.source.id} · ` : ""}${asset.pageCount} ${unit} · ${(asset.byteLength / 1024 / 1024).toFixed(1)} MB${asset.lastPage ? ` · 上次读到第 ${asset.lastPage} ${unit}` : ""}`;
       const button = document.createElement("button");
       button.type = "button"; button.textContent = asset.lastPage ? "继续阅读" : "开始阅读";
       button.setAttribute("aria-label", `${button.textContent}：${asset.title}`);
@@ -104,11 +107,13 @@ export function createLibraryPanel(container: HTMLElement, call: LibraryCall, op
   });
   const arxiv = createArxivPanel(container.querySelector("#arxiv-panel")!, call, refresh, openAsset);
   const local = createLocalLibraryPanel(container.querySelector("#local-library-panel")!, call, refresh);
-  return { async show(arxivEnabled = false) {
+  const github = createGithubPanel(container.querySelector("#github-panel")!, call, refresh, openAsset);
+  return { async show(arxivEnabled = false, githubEnabled = false) {
     container.hidden = false;
     try { await refresh(); }
     catch (error) { status.textContent = `读取书库失败：${message(error)}`; }
     await local.show();
     await arxiv.show(arxivEnabled);
+    await github.show(githubEnabled);
   }, hide() { container.hidden = true; arxiv.hide(); } };
 }

@@ -81,6 +81,7 @@ import "./mcp-app.css";
 import { createReaderNavigation } from "./reader-navigation.js";
 import { createLibraryPanel, legacyReadingState, type LibraryCall } from "./library-panel.js";
 import type { LibraryAsset, ReadingState } from "./library-types.js";
+import { createTextReader } from "./text-reader.js";
 import { HostBridge } from "./host-bridge.js";
 import { createReadingContext, withNearbyText, findSelectionInText, assertReferenceTarget, type ReadingContext, type SelectionRect } from "./reading-context.js";
 
@@ -808,6 +809,7 @@ const app = new App(
 
 const host = new HostBridge(app);
 let arxivEnabled = false;
+let githubEnabled = false;
 const libraryBar = document.getElementById("library-bar")!;
 const libraryHome = document.getElementById("library-home") as HTMLButtonElement;
 const libraryAddCurrent = document.getElementById("library-add-current") as HTMLButtonElement;
@@ -815,7 +817,7 @@ const librarySaveStatus = document.getElementById("library-save-status")!;
 const libraryMigrationStatus = document.getElementById("library-migration-status")!;
 const libraryRetrySave = document.getElementById("library-retry-save") as HTMLButtonElement;
 const callLibrary: LibraryCall = async <T>(name: string, args: Record<string, unknown>) => {
-  const result = await host.callTool({ name, arguments: args });
+  const result = await host.callTool({ name, arguments: args }, name === "github_import_file" ? { timeout: 180000 } : undefined);
   if (result.isError) throw new Error(result.content?.filter(c => c.type === "text").map(c => c.text).join("\n") || "书库请求失败。");
   return result.structuredContent as T;
 };
@@ -826,18 +828,21 @@ async function openLibraryAsset(assetId: string) {
   try {
     await readingSaveWork;
     if (readingSaveFailed) throw new Error("当前阅读位置尚未保存，请先重试保存。");
-    const result = await host.callTool({ name: "display_pdf", arguments: { assetId } });
+    const asset = await callLibrary<LibraryAsset>("library_get_asset", { assetId });
+    const name = asset.githubSource && asset.githubSource.format !== "pdf" ? "library_read_text" : "display_pdf";
+    const result = await host.callTool({ name, arguments: { assetId } });
     if (result.isError) throw new Error(result.content?.filter(c => c.type === "text").map(c => c.text).join("\n"));
     await queueReaderResult(result);
   } finally { openingAsset = false; }
 }
 const libraryPanel = createLibraryPanel(document.getElementById("library-panel")!, callLibrary, openLibraryAsset);
+const textReader = createTextReader(document.getElementById("text-reader")!, callLibrary, host);
 libraryHome.addEventListener("click", async () => {
   libraryHome.disabled = true;
   try {
     await readingSaveWork;
     if (readingSaveFailed) return;
-    await queueReaderResult({ content: [], structuredContent: { kind: "library" }, _meta: { libraryEnabled: true, arxivEnabled } });
+    await queueReaderResult({ content: [], structuredContent: { kind: "library" }, _meta: { libraryEnabled: true, arxivEnabled, githubEnabled } });
   } catch (error) {
     librarySaveStatus.textContent = `打开书库失败：${error instanceof Error ? error.message : String(error)}`;
   } finally { libraryHome.disabled = false; }
@@ -4866,6 +4871,7 @@ function queueReaderResult(result: CallToolResult) {
 }
 app.ontoolresult = queueReaderResult;
 async function handleReaderResult(result: CallToolResult) {
+  await textReader.hide();
   await readingSaveWork;
   stopPolling();
   await commandWork.catch(() => {}); // The poll loop already reports command failures.
@@ -4894,6 +4900,7 @@ async function handleReaderResult(result: CallToolResult) {
   librarySaveStatus.textContent = ""; libraryMigrationStatus.textContent = ""; libraryRetrySave.hidden = true;
   libraryBar.hidden = result._meta?.libraryEnabled !== true;
   arxivEnabled = result._meta?.arxivEnabled === true;
+  githubEnabled = result._meta?.githubEnabled === true;
   libraryAddCurrent.hidden = true;
   if ((result.structuredContent as { kind?: string } | undefined)?.kind === "library") {
     currentPage = 1; totalPages = 0; pdfUrl = ""; pdfTitle = undefined;
@@ -4903,10 +4910,16 @@ async function handleReaderResult(result: CallToolResult) {
     } catch {
       librarySaveStatus.textContent = "书库已打开，但客户端未接受新的阅读上下文。";
     }
-    await libraryPanel.show(arxivEnabled);
+    await libraryPanel.show(arxivEnabled, githubEnabled);
     return;
   }
   libraryPanel.hide();
+  if ((result.structuredContent as { kind?: string } | undefined)?.kind === "text") {
+    currentPage = 1; totalPages = 0; pdfUrl = ""; pdfTitle = undefined;
+    loadingEl.style.display = "none"; errorEl.style.display = "none"; viewerEl.style.display = "none";
+    await textReader.show(result.structuredContent as unknown as { asset: LibraryAsset; text: string; state: ReadingState });
+    return;
+  }
   log.info("Received tool result:", result);
 
   const parsed = parseToolResult(result);
@@ -5512,6 +5525,8 @@ app.registerTool(
       "Get information about the current PDF document including title, current page, total pages, and zoom level",
   },
   async () => {
+    const textContext = textReader.context();
+    if (textContext) return { content: [{ type: "text" as const, text: JSON.stringify(textContext) }], structuredContent: { readingContext: textContext } };
     if (!pdfDocument) {
       return {
         content: [{ type: "text" as const, text: "Error: No document loaded" }],

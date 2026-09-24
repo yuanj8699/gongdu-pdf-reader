@@ -1,5 +1,5 @@
 import type { App } from "@modelcontextprotocol/ext-apps";
-import { questionMessage, type ReadingContext } from "./reading-context.js";
+import { questionMessage, type ReadingContext, type TextReadingContext } from "./reading-context.js";
 
 type Host = Pick<App, "callServerTool" | "sendMessage" | "updateModelContext" | "getHostContext" | "getHostCapabilities"
   | "requestDisplayMode" | "sendSizeChanged" | "openLink" | "downloadFile">;
@@ -26,7 +26,7 @@ export class HostBridge {
     return work;
   }
 
-  async ask(context: ReadingContext, question: string) {
+  async ask(context: ReadingContext | TextReadingContext, question: string) {
     // Serialize before awaiting anything. A later page change cannot alter this question.
     const text = questionMessage(context, question);
     let reply;

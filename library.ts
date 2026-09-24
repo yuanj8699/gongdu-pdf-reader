@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Bookmark, LibraryAsset, LibraryEntry, ReadingState } from "./src/library-types.js";
 import type { ArxivPaper, ArxivJob } from "./src/arxiv-types.js";
+import type { GitHubSource } from "./src/github-types.js";
 
 export const MAX_IMPORT_BYTES = 512 * 1024 * 1024;
 export const UPLOAD_CHUNK_BYTES = 512 * 1024;
@@ -32,7 +33,7 @@ export class LibraryService {
     this.db = new DatabaseSync(path.join(this.directory, "library.sqlite"));
     this.db.exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;");
     const version = (this.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-    if (version > 2) { this.db.close(); throw new Error("书库版本较新，请使用新版阅读器。"); }
+    if (version > 3) { this.db.close(); throw new Error("书库版本较新，请使用新版阅读器。"); }
     if (version === 0) {
       this.db.exec(`BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, title TEXT NOT NULL);
@@ -54,6 +55,15 @@ export class LibraryService {
     if (version < 2) {
       try { this.upgradeToV2(); }
       catch (error) { this.db.close(); throw error; }
+    }
+    if (version < 3) {
+      try {
+        this.db.exec(`BEGIN IMMEDIATE;
+          CREATE TABLE github_sources (repository TEXT NOT NULL, file_path TEXT NOT NULL, commit_sha TEXT NOT NULL,
+            asset_id TEXT NOT NULL UNIQUE REFERENCES assets(id), metadata TEXT NOT NULL,
+            PRIMARY KEY(repository,file_path,commit_sha));
+          PRAGMA user_version=3; COMMIT;`);
+      } catch (error) { this.db.exec("ROLLBACK"); this.db.close(); throw error; }
     }
     // Remove only stale staging files created by this service, never live imports.
     for (const name of fs.readdirSync(path.join(this.directory, "tmp"))) {
@@ -87,6 +97,8 @@ export class LibraryService {
   }
 
   private withSource(row: LibraryAsset): LibraryAsset {
+    const github = this.db.prepare("SELECT metadata FROM github_sources WHERE asset_id=?").get(row.assetId) as { metadata: string } | undefined;
+    if (github) return { ...row, githubSource: JSON.parse(github.metadata) as GitHubSource };
     const source = this.db.prepare("SELECT metadata FROM arxiv_sources WHERE asset_id=?").get(row.assetId) as { metadata: string } | undefined;
     if (!source) return row;
     const paper = JSON.parse(source.metadata) as ArxivPaper;
@@ -211,6 +223,41 @@ export class LibraryService {
   }
   async importArxiv(staged: string, source: ArxivPaper, signal: AbortSignal): Promise<LibraryAsset> {
     return this.commitFile(staged, `${source.id.replaceAll("/", "_")}.pdf`, source, signal);
+  }
+  async importGithub(staged: string, source: GitHubSource): Promise<LibraryAsset> {
+    const byteLength = (await fs.promises.stat(staged)).size;
+    if (byteLength > (source.format === "pdf" ? 100 * 1024 * 1024 : 1024 * 1024)) throw new Error("GitHub 文件超过大小上限。");
+    const sha256 = await hashFile(staged);
+    const info = source.format === "pdf" ? await this.inspectPdf(staged)
+      : { pageCount: (await fs.promises.readFile(staged, "utf8")).split("\n").length, fingerprint: sha256 };
+    const blob = path.join(this.directory, "blobs", sha256);
+    try { await fs.promises.link(staged, blob); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    if (await hashFile(blob) !== sha256) throw new Error("书库原件校验失败，未覆盖。");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const key = source.repository.toLowerCase();
+      const existing = this.db.prepare("SELECT asset_id FROM github_sources WHERE repository=? AND file_path=? AND commit_sha=?")
+        .get(key, source.path, source.commit) as { asset_id: string } | undefined;
+      if (existing) {
+        const asset = this.asset(existing.asset_id);
+        if (asset.sha256 !== sha256) throw new Error("同一 GitHub 提交的文件内容不同，未覆盖。");
+        this.db.exec("COMMIT"); return asset;
+      }
+      const previous = this.db.prepare(`SELECT v.document_id FROM github_sources s JOIN assets a ON a.id=s.asset_id
+        JOIN versions v ON v.id=a.version_id WHERE s.repository=? AND s.file_path=? LIMIT 1`).get(key, source.path) as { document_id: string } | undefined;
+      const documentId = previous?.document_id ?? randomUUID(), versionId = randomUUID(), assetId = randomUUID();
+      if (!previous) this.db.prepare("INSERT INTO documents VALUES(?,?)").run(documentId, `${source.repository} / ${source.path}`);
+      this.db.prepare("INSERT INTO versions VALUES(?,?)").run(versionId, documentId);
+      this.db.prepare("INSERT INTO assets VALUES(?,?,?,?,?,?,?,?)").run(assetId, versionId, sha256, path.posix.basename(source.path), byteLength, info.pageCount, info.fingerprint, new Date().toISOString());
+      this.db.prepare("INSERT INTO github_sources VALUES(?,?,?,?,?)").run(key, source.path, source.commit, assetId, JSON.stringify(source));
+      this.db.exec("COMMIT"); return this.asset(assetId);
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  async readText(assetId: string): Promise<string> {
+    const asset = await this.verify(assetId);
+    if (!asset.githubSource || asset.githubSource.format === "pdf") throw new Error("此资料不是 GitHub 文本文件。");
+    return fs.promises.readFile(this.filePath(assetId), "utf8");
   }
   private async commitFile(staged: string, fileName: string, source?: ArxivPaper, signal?: AbortSignal): Promise<LibraryAsset> {
     const byteLength = (await fs.promises.stat(staged)).size;

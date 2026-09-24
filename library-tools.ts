@@ -7,13 +7,15 @@ export const LibraryAssetSchema = z.object({
   documentId: z.string(), versionId: z.string(), assetId: z.string(), title: z.string(),
   fileName: z.string(), sha256: z.string(), byteLength: z.number(), pageCount: z.number(),
   fingerprint: z.string(), createdAt: z.string(),
+  githubSource: z.object({ provider: z.literal("github"), repository: z.string(), commit: z.string(), path: z.string(),
+    blobSha: z.string(), url: z.string(), format: z.enum(["pdf", "markdown", "code"]) }).optional(),
   source: z.object({ provider: z.literal("arxiv"), id: z.string(), baseId: z.string(), version: z.number(),
     title: z.string(), authors: z.array(z.string()), summary: z.string(), published: z.string(), updated: z.string(),
     abstractUrl: z.string(), pdfUrl: z.string() }).optional(),
 });
 
 export function registerLibraryTools(server: McpServer, library: LibraryService, resourceUri: string,
-  localPath: (input: string) => string, arxivEnabled = false) {
+  localPath: (input: string) => string, arxivEnabled = false, githubEnabled = false) {
   const invoke = (operation: () => unknown | Promise<unknown>): Promise<CallToolResult> =>
     Promise.resolve().then(operation).then((data) => ({
       content: [{ type: "text" as const, text: JSON.stringify(data) }],
@@ -26,11 +28,21 @@ export function registerLibraryTools(server: McpServer, library: LibraryService,
     inputSchema: z.object({}),
     annotations: { readOnlyHint: true },
     _meta: { ui: { resourceUri }, "openai/ui": { entrypoints: [{ type: "thread" }] } },
-  }, async () => ({ content: [{ type: "text", text: "本地 PDF 书库" }], structuredContent: { kind: "library" }, _meta: { libraryEnabled: true, arxivEnabled } }));
+  }, async () => ({ content: [{ type: "text", text: "本地共读书库" }], structuredContent: { kind: "library" }, _meta: { libraryEnabled: true, arxivEnabled, githubEnabled } }));
   server.registerTool("library_list", {
-    description: "List PDFs imported into the persistent library. Open an entry with display_pdf(assetId).", inputSchema: z.object({}),
+    description: "List library files. Open PDFs with display_pdf(assetId); GitHub Markdown/code with library_read_text(assetId).", inputSchema: z.object({}),
     annotations: { readOnlyHint: true },
   }, () => invoke(() => ({ entries: library.list() })));
+  server.registerTool("library_get_asset", {
+    description: "Get one library file's metadata and format.", inputSchema: z.object({ assetId: z.string() }), annotations: { readOnlyHint: true },
+  }, ({ assetId }) => invoke(() => library.asset(assetId)));
+  registerAppTool(server, "library_read_text", {
+    description: "Open an imported GitHub Markdown/code file in the reader, preserving its exact commit and source line numbers.",
+    inputSchema: z.object({ assetId: z.string() }), annotations: { readOnlyHint: true }, _meta: { ui: { resourceUri } },
+  }, async ({ assetId }) => {
+    const result = await invoke(async () => ({ kind: "text", asset: library.asset(assetId), text: await library.readText(assetId), state: library.state(assetId) }));
+    return { ...result, _meta: { libraryEnabled: true, arxivEnabled, githubEnabled } };
+  });
   server.registerTool("library_import_pdf", {
     description: "Copy an explicitly authorized local PDF into the persistent library; identical bytes reuse the existing asset. Other local PDFs can be chosen by the user in the library's file picker.",
     inputSchema: z.object({ path: z.string() }),

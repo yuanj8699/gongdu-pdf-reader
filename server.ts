@@ -60,6 +60,8 @@ import { LibraryAssetSchema, registerLibraryTools } from "./library-tools.js";
 import { ReferenceTargetSchema, PdfPageSchema } from "./src/reading-context.js";
 import type { ArxivService } from "./arxiv.js";
 import { registerArxivTools } from "./arxiv-tools.js";
+import type { GitHubService } from "./github.js";
+import { registerGithubTools } from "./github-tools.js";
 import { LocalLibrary, registerLocalLibraryTools } from "./local-library.js";
 
 // =============================================================================
@@ -1226,6 +1228,7 @@ export async function extractFormSchema(
 export interface CreateServerOptions {
   library?: LibraryService;
   arxiv?: ArxivService;
+  github?: GitHubService;
   localLibraryDirectories?: string[];
   /** PDF opened when the sidebar entrypoint is clicked without arguments. */
   defaultPdfUrl?: string;
@@ -1323,8 +1326,9 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     const validation = validateUrl(input);
     if (!validation.valid) throw new Error(validation.error);
     return isFileUrl(input) ? fileUrlToPath(input) : decodeURIComponent(input);
-  }, Boolean(options.arxiv));
+  }, Boolean(options.arxiv), Boolean(options.github));
   if (options.arxiv) registerArxivTools(server, options.arxiv);
+  if (options.github) registerGithubTools(server, options.github);
   if (library) registerLocalLibraryTools(server, new LocalLibrary(options.localLibraryDirectories ?? [], library));
 
   // Tool: list_pdfs - List available PDFs
@@ -1581,6 +1585,7 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
       assetId ??= url.startsWith("library://") ? url.slice("library://".length) : undefined;
       if (assetId && !library) return { isError: true, content: [{ type: "text", text: "书库未启用。" }] };
       const libraryAsset = assetId ? await library!.verify(assetId) : undefined;
+      if (libraryAsset?.githubSource && libraryAsset.githubSource.format !== "pdf") return { isError: true, content: [{ type: "text", text: "此资料是文本，请使用 library_read_text 打开。" }] };
       const normalized = libraryAsset ? `library://${libraryAsset.assetId}` : isArxivUrl(url) ? normalizeArxivUrl(url) : url;
       const validation = validateReaderUrl(normalized);
 
@@ -1770,6 +1775,7 @@ URL: ${normalized}`,
           writable,
           libraryEnabled: Boolean(library),
           arxivEnabled: Boolean(options.arxiv),
+          githubEnabled: Boolean(options.github),
           // Debug: viewer renders this in a floating bubble (--debug flag).
           ...(debug
             ? {
