@@ -250,7 +250,7 @@ outlineToggle.addEventListener("click", () => {
 async function refitReader() {
   if (userHasZoomed) return;
   const fitted = await computeFitScale();
-  if (fitted !== null) { scale = fitted; void renderPage(); }
+  if (fitted !== null && !userHasZoomed) { scale = fitted; void renderPage(); }
 }
 function documentStorageKey(): string | undefined {
   const fingerprint = pdfDocument?.fingerprints[0];
@@ -370,9 +370,8 @@ let userHasZoomed = false;
  * Returns null only when the container hasn't laid out yet.
  *
  * Inline mode: fit-to-WIDTH capped at 1.0. We shrink to fit a narrow chat
- * column but don't blow up past natural size — the iframe sizes itself to
- * the page via sendSizeChanged, so growing past 1.0 would just make the
- * iframe huge.
+ * column but don't blow up past natural size. The inline frame requests
+ * enough height for the page up to 850px; larger pages scroll internally.
  *
  * Fullscreen mode: fit-to-PAGE capped at ZOOM_MAX. The whole page is visible
  * without scrolling (min of width-fit and height-fit). On a wide screen this
@@ -434,7 +433,7 @@ async function computeFitScale(mode: "auto" | "width" | "page" = "auto"): Promis
 async function refitScale(): Promise<void> {
   if (!pdfDocument || userHasZoomed) return;
   const fitScale = await computeFitScale();
-  if (fitScale !== null && Math.abs(fitScale - scale) > 0.01) {
+  if (!userHasZoomed && fitScale !== null && Math.abs(fitScale - scale) > 0.01) {
     scale = fitScale;
     log.info("Refit scale:", scale);
     renderPage();
@@ -526,7 +525,9 @@ function requestFitToContent() {
     return;
   }
 
-  host.sendSizeChanged({ width: totalWidth, height: totalHeight });
+  // Keep inline reading bounded too: large/zoomed pages scroll inside the
+  // document area instead of pushing the controls out of the chat viewport.
+  host.sendSizeChanged({ width: totalWidth, height: Math.min(totalHeight, 850) });
 }
 
 // --- Search Functions ---
@@ -4358,8 +4359,15 @@ canvasContainerEl.addEventListener(
       return;
     }
 
-    // Only intercept horizontal scroll, let vertical scroll through
-    if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+    // Keep the wheel inside the PDF, including at the first/last scroll edge.
+    // This also prevents an embedded host from scrolling the surrounding chat.
+    if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) {
+      e.preventDefault();
+      const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
+        : e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? canvasContainerEl.clientHeight : 1;
+      canvasContainerEl.scrollBy({ top: e.deltaY * unit, behavior: "instant" });
+      return;
+    }
 
     // If the page overflows horizontally, let native panning handle it
     // (no page changes). Checking actual overflow rather than `scale > 1.0`
@@ -5414,7 +5422,7 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
     if (panelState.open) {
       setAnnotationPanelOpen(true);
     }
-    if (!isFullscreen) {
+    if (wasFullscreen && !isFullscreen) {
       // Fullscreen zoom level is meaningless inline — always refit on exit,
       // however it was triggered (pinch, button, host Escape/×).
       userHasZoomed = false;

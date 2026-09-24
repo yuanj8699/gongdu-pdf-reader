@@ -260,6 +260,22 @@ try {
   await zoom.fill("oops"); await zoom.press("Enter"); await expect(zoom).toHaveValue("150%");
   await zoom.fill("900"); await zoom.press("Enter"); await expect(zoom).toHaveValue("300%");
   await expect(view.locator("#zoom-in-btn")).toBeDisabled();
+  async function checkWheelScroll(mode: string) {
+    const area = view.locator(".canvas-container");
+    await area.evaluate(el => { el.scrollTop = 0; });
+    const toolbarTop = (await view.locator(".zoom-bar").boundingBox())!.y;
+    await area.hover();
+    await page.mouse.wheel(0, 360);
+    await expect.poll(() => area.evaluate(el => el.scrollTop)).toBeGreaterThan(200);
+    await page.mouse.wheel(0, -360);
+    await expect.poll(() => area.evaluate(el => el.scrollTop)).toBe(0);
+    // Overscroll stays inside the reader; controls never travel with the page.
+    await page.mouse.wheel(0, -600);
+    await expect.poll(() => view.locator(".zoom-bar").boundingBox().then(box => box!.y)).toBe(toolbarTop);
+    await expect.poll(() => area.evaluate(el => el.scrollTop)).toBe(0);
+    check(`${mode}: real mouse wheel scrolls the PDF down/up while controls stay fixed`);
+  }
+  await checkWheelScroll("fullscreen sidebar");
   await view.locator(".canvas-container").evaluate(el => { el.scrollTop = 500; el.scrollLeft = 200; });
   const controls = await view.locator(".zoom-bar button, #zoom-level").evaluateAll(elements => elements.map(el => {
     const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth;
@@ -281,6 +297,11 @@ try {
   await go(3);
   await page.setViewportSize({ width: 380, height: 850 });
   await view.locator("#fullscreen-btn").click();
+  await expect(view.locator(".main")).not.toHaveClass(/fullscreen/);
+  await zoom.fill("150"); await zoom.press("Enter");
+  await expect.poll(() => view.locator("#pdf-canvas").evaluate(el => el.getBoundingClientRect().width)).toBe(918);
+  await checkWheelScroll("inline reader");
+  await expect(view.locator("#page-input")).toHaveValue("3");
   check("editable zoom, plus/minus, limits, navigation persistence, reachable page edges, fixed controls and width/page fit");
   await view.locator("#library-home").click();
   await expect(view.locator("#local-library-panel")).toBeVisible();

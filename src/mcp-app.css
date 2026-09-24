@@ -27,6 +27,8 @@ body {
   flex-direction: column;
   flex: 1;
   width: 100%;
+  max-height: 100dvh;
+  box-sizing: border-box;
   background: var(--bg100);
   color: var(--text000);
   overflow: hidden; /* Prevent scrollbars in inline mode - we request exact size */
@@ -91,6 +93,7 @@ body {
   display: flex;
   flex-direction: column;
   flex: 1;
+  min-height: 0;
   overflow: visible;
   position: relative;
 }
@@ -287,8 +290,9 @@ body {
 /* Single Page Canvas Container */
 .canvas-container {
   flex: 1;
-  overflow-x: auto; /* Allow horizontal scrolling when zoomed in inline mode */
-  overflow-y: visible;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
   display: flex;
   justify-content: flex-start;
   align-items: flex-start;
