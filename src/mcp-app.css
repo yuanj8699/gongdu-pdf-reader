@@ -259,10 +259,30 @@ body {
 
 .zoom-level {
   font-size: 0.8rem;
-  color: var(--text100);
-  min-width: 50px;
+  color: var(--text000);
+  background: var(--bg000);
+  border: 1px solid var(--bg300);
+  border-radius: 4px;
+  width: 64px;
+  min-width: 0;
+  height: 32px;
+  box-sizing: border-box;
   text-align: center;
 }
+
+.zoom-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  gap: .35rem;
+  padding: .4rem .65rem;
+  border-bottom: 1px solid var(--bg200);
+  background: var(--bg000);
+}
+.zoom-caption { font-size: .8rem; color: var(--text100); }
+.zoom-bar .reader-action { min-height: 32px; padding: .3rem .5rem; }
+.zoom-level:focus-visible { outline: 2px solid light-dark(#235c4a, #7bd3af); }
 
 /* Single Page Canvas Container */
 .canvas-container {
@@ -270,8 +290,9 @@ body {
   overflow-x: auto; /* Allow horizontal scrolling when zoomed in inline mode */
   overflow-y: visible;
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
   align-items: flex-start;
+  min-width: 0;
   padding: 1rem;
   background: var(--bg200);
   /* JS owns pinch (inline pinch-in → fullscreen). pan-x/pan-y keeps native
@@ -282,6 +303,8 @@ body {
 
 .page-wrapper {
   position: relative;
+  flex-shrink: 0;
+  margin-inline: auto; /* Center when it fits; keep the left edge reachable when zoomed. */
   box-shadow:
     0 1px 4px var(--shadow-page-color),
     0 4px 16px var(--shadow-page-color);

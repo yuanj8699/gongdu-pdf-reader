@@ -210,7 +210,7 @@ const prevBtn = document.getElementById("prev-btn") as HTMLButtonElement;
 const nextBtn = document.getElementById("next-btn") as HTMLButtonElement;
 const zoomOutBtn = document.getElementById("zoom-out-btn") as HTMLButtonElement;
 const zoomInBtn = document.getElementById("zoom-in-btn") as HTMLButtonElement;
-const zoomLevelEl = document.getElementById("zoom-level")!;
+const zoomLevelEl = document.getElementById("zoom-level") as HTMLInputElement;
 const fullscreenBtn = document.getElementById(
   "fullscreen-btn",
 ) as HTMLButtonElement;
@@ -248,6 +248,7 @@ outlineToggle.addEventListener("click", () => {
   readerNavigation.setExpanded(!readerNavigation.expanded);
 });
 async function refitReader() {
+  if (userHasZoomed) return;
   const fitted = await computeFitScale();
   if (fitted !== null) { scale = fitted; void renderPage(); }
 }
@@ -378,7 +379,7 @@ let userHasZoomed = false;
  * typically lands well above 1.0; on a phone in portrait, width is the
  * tighter constraint and it degrades to fit-to-width.
  */
-async function computeFitScale(): Promise<number | null> {
+async function computeFitScale(mode: "auto" | "width" | "page" = "auto"): Promise<number | null> {
   if (!pdfDocument) return null;
 
   try {
@@ -401,7 +402,8 @@ async function computeFitScale(): Promise<number | null> {
     if (availableWidth <= 0 || pageWidth <= 0) return null;
 
     const widthFit = availableWidth / pageWidth;
-    if (currentDisplayMode !== "fullscreen") {
+    if (mode === "width") return Math.min(ZOOM_MAX, widthFit);
+    if (mode === "auto" && currentDisplayMode !== "fullscreen") {
       return Math.min(1.0, widthFit);
     }
     // Fullscreen: fit the WHOLE page. If height isn't measurable yet
@@ -501,16 +503,18 @@ function requestFitToContent() {
   const paddingBottom = parseFloat(containerStyle.paddingBottom);
 
   // Calculate required height:
-  // toolbar + padding-top + page-wrapper height + padding-bottom + buffer
+  // All visible control rows + document padding + page + rounding buffer.
   // Note: search bar is absolutely positioned over the document area, so excluded
   const toolbarHeight = toolbarEl.offsetHeight;
+  const extraControlsHeight = Array.from(mainEl.querySelectorAll<HTMLElement>(".zoom-bar, .selection-bar, .library-bar"))
+    .reduce((height, row) => height + row.offsetHeight, 0);
   const pageWrapperHeight = pageWrapperEl.offsetHeight;
   const BUFFER = 10; // Buffer for sub-pixel rounding and browser quirks
   const totalHeight =
-    toolbarHeight + paddingTop + pageWrapperHeight + paddingBottom + BUFFER;
+    toolbarHeight + extraControlsHeight + paddingTop + pageWrapperHeight + paddingBottom + BUFFER;
 
-  // In inline mode (this function early-returns for fullscreen) the side panel is hidden
-  const totalWidth = pageWrapperEl.offsetWidth + BUFFER;
+  // Zoom the document inside the reader, without asking the host to widen it.
+  const totalWidth = mainEl.clientWidth;
 
   // pageWrapper measuring ≈ 0 means the canvas hasn't laid out yet (early
   // render, hidden ancestor, etc). Sending toolbar-height-only would shrink
@@ -1052,7 +1056,9 @@ function updateControls() {
   totalPagesEl.textContent = `of ${totalPages}`;
   prevBtn.disabled = currentPage <= 1;
   nextBtn.disabled = currentPage >= totalPages;
-  zoomLevelEl.textContent = `${Math.round(scale * 100)}%`;
+  if (document.activeElement !== zoomLevelEl) zoomLevelEl.value = `${Math.round(scale * 100)}%`;
+  zoomOutBtn.disabled = scale <= ZOOM_MIN;
+  zoomInBtn.disabled = scale >= ZOOM_MAX;
 }
 
 /**
@@ -3739,20 +3745,41 @@ function scrollSelectionIntoView(): void {
   }
 }
 
-function zoomIn() {
+function setZoom(next: number) {
+  if (!pdfDocument) return;
   userHasZoomed = true;
-  scale = Math.min(scale + 0.25, ZOOM_MAX);
+  scale = Math.max(ZOOM_MIN, Math.min(next, ZOOM_MAX));
+  zoomLevelEl.value = `${Math.round(scale * 100)}%`;
   renderPage().then(scrollSelectionIntoView);
 }
 
+function zoomIn() {
+  setZoom(scale + 0.25);
+}
+
 function zoomOut() {
-  userHasZoomed = true;
   // Intentionally NOT floored at fit-to-page (unlike pinch). Hosts may
   // overlay UI on the iframe without reporting it in safeAreaInsets, so
   // "fit" can leave the page bottom hidden; the button is the escape hatch
   // to shrink past it. Pinch still rubber-bands at fit (see commitPinch).
-  scale = Math.max(scale - 0.25, ZOOM_MIN);
-  renderPage().then(scrollSelectionIntoView);
+  setZoom(scale - 0.25);
+}
+
+async function fitZoom(mode: "width" | "page") {
+  const fitted = await computeFitScale(mode);
+  if (fitted === null) return;
+  userHasZoomed = true;
+  scale = fitted;
+  zoomLevelEl.value = `${Math.round(scale * 100)}%`;
+  await renderPage();
+  canvasContainerEl.scrollTo({ left: 0, top: 0 });
+}
+
+function applyZoomInput() {
+  const raw = zoomLevelEl.value.trim().replace(/%$/, "").trim();
+  const value = Number(raw);
+  if (raw && Number.isFinite(value)) setZoom(value / 100);
+  else zoomLevelEl.value = `${Math.round(scale * 100)}%`;
 }
 
 function resetZoom() {
@@ -3810,6 +3837,17 @@ prevBtn.addEventListener("click", prevPage);
 nextBtn.addEventListener("click", nextPage);
 zoomOutBtn.addEventListener("click", zoomOut);
 zoomInBtn.addEventListener("click", zoomIn);
+zoomLevelEl.addEventListener("change", applyZoomInput);
+zoomLevelEl.addEventListener("keydown", event => {
+  if (event.key === "Enter") { event.preventDefault(); zoomLevelEl.blur(); }
+  if (event.key === "Escape") {
+    event.stopPropagation();
+    zoomLevelEl.value = `${Math.round(scale * 100)}%`;
+    zoomLevelEl.blur();
+  }
+});
+document.getElementById("zoom-width-btn")!.addEventListener("click", () => { void fitZoom("width"); });
+document.getElementById("zoom-page-btn")!.addEventListener("click", () => { void fitZoom("page"); });
 searchBtn.addEventListener("click", toggleSearch);
 searchCloseBtn.addEventListener("click", closeSearch);
 searchPrevBtn.addEventListener("click", goToPrevMatch);
@@ -4234,7 +4272,7 @@ function updatePinch(nextScale: number) {
   // Transform is RELATIVE to the rendered canvas (which sits at
   // pinchStartScale), so a previewScale equal to pinchStartScale → ratio 1.
   pageWrapperEl.style.transform = `scale(${previewScale / pinchStartScale})`;
-  zoomLevelEl.textContent = `${Math.round(previewScale * 100)}%`;
+  zoomLevelEl.value = `${Math.round(previewScale * 100)}%`;
 }
 
 function commitPinch() {
@@ -4264,7 +4302,7 @@ function commitPinch() {
   if (Math.abs(target - scale) < 0.01) {
     // Snap-back / dead-zone — no re-render needed.
     pageWrapperEl.style.transform = "";
-    zoomLevelEl.textContent = `${Math.round(scale * 100)}%`;
+    zoomLevelEl.value = `${Math.round(scale * 100)}%`;
     return;
   }
   userHasZoomed = true;
@@ -4413,7 +4451,7 @@ canvasContainerEl.addEventListener("touchcancel", () => {
   touchStartDist = 0;
   // Cancelled (call, app-switch) → revert, don't commit a half-gesture.
   pageWrapperEl.style.transform = "";
-  zoomLevelEl.textContent = `${Math.round(scale * 100)}%`;
+  zoomLevelEl.value = `${Math.round(scale * 100)}%`;
 });
 
 // Parse tool result
