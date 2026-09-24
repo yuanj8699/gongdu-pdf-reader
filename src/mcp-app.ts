@@ -3748,6 +3748,7 @@ function scrollSelectionIntoView(): void {
 
 function setZoom(next: number) {
   if (!pdfDocument) return;
+  cancelWheelZoom();
   userHasZoomed = true;
   scale = Math.max(ZOOM_MIN, Math.min(next, ZOOM_MAX));
   zoomLevelEl.value = `${Math.round(scale * 100)}%`;
@@ -3767,6 +3768,7 @@ function zoomOut() {
 }
 
 async function fitZoom(mode: "width" | "page") {
+  cancelWheelZoom();
   const fitted = await computeFitScale(mode);
   if (fitted === null) return;
   userHasZoomed = true;
@@ -3784,6 +3786,7 @@ function applyZoomInput() {
 }
 
 function resetZoom() {
+  cancelWheelZoom();
   userHasZoomed = false;
   // Re-fit rather than blindly snapping to 1.0 — in a narrow inline iframe
   // 1.0 overflows, and in fullscreen 1.0 leaves the page floating in space.
@@ -4215,12 +4218,11 @@ document.addEventListener("selectionchange", () => {
   }, 300);
 });
 
-// --- Pinch zoom (fullscreen only) ---
+// --- Wheel and pinch zoom ---
 //
 // Covers two input paths:
-//   1. wheel + ctrlKey  → trackpad pinch on macOS Safari/Chrome/FF and
-//                         Windows precision touchpads. The browser synthesizes
-//                         these on pinch; deltaY < 0 is zoom-in.
+//   1. wheel + ctrlKey  → Ctrl+mouse wheel or a synthesized trackpad pinch.
+//                         Zooms in either display mode; deltaY < 0 is zoom-in.
 //   2. two-finger touch → mobile Safari / Chrome Android. We track the
 //                         distance between the two touches and scale by the
 //                         ratio against the initial distance.
@@ -4237,20 +4239,30 @@ let pinchStartScale = 1.0;
 let previewScale = 1.0;
 /** Debounce timer — wheel events have no end event, so we wait for quiet. */
 let pinchSettleTimer: ReturnType<typeof setTimeout> | null = null;
+// An explicit zoom command wins over an earlier wheel gesture still settling.
+function cancelWheelZoom() {
+  if (pinchSettleTimer === null) return;
+  clearTimeout(pinchSettleTimer);
+  pinchSettleTimer = null;
+  pageWrapperEl.style.transform = "";
+}
 /** computeFitScale() snapshot at gesture start (async — may be null briefly). */
 let fitScaleAtPinchStart: number | null = null;
+// Touch gestures retain their fit/exit behavior; Ctrl+wheel only changes zoom.
+let pinchAllowsModeChange = true;
 /** Guards against firing toggleFullscreen() once per wheel event during a
  *  single inline pinch-in gesture. */
 let modeTransitionInFlight = false;
 
-function beginPinch() {
+function beginPinch(allowModeChange = true) {
+  pinchAllowsModeChange = allowModeChange;
   pinchStartScale = scale;
   previewScale = scale;
   // Seed synchronously when we can (at fit ⇔ !userHasZoomed) so the very
   // first updatePinch already has the right floor — avoids a one-frame
   // jitter when the async computeFitScale resolves mid-gesture.
   fitScaleAtPinchStart = userHasZoomed ? null : scale;
-  void computeFitScale().then((s) => (fitScaleAtPinchStart = s));
+  if (allowModeChange) void computeFitScale().then((s) => (fitScaleAtPinchStart = s));
   // transform-origin matches the flex layout's anchor (justify-content:
   // center, align-items: flex-start) so the preview and the committed
   // canvas grow from the same point — otherwise the page jumps on release.
@@ -4261,7 +4273,7 @@ function beginPinch() {
  *  The preview is allowed to overshoot down to 0.75×fit for rubber-band
  *  feedback; release below 0.9×fit exits to inline, otherwise snaps to fit. */
 function pinchFitFloor(): number | null {
-  return currentDisplayMode === "fullscreen" ? fitScaleAtPinchStart : null;
+  return pinchAllowsModeChange && currentDisplayMode === "fullscreen" ? fitScaleAtPinchStart : null;
 }
 
 function updatePinch(nextScale: number) {
@@ -4322,32 +4334,20 @@ canvasContainerEl.addEventListener(
   (event) => {
     const e = event as WheelEvent;
 
-    // Trackpad pinch arrives as wheel with ctrlKey set (Chrome/FF/Edge on
-    // macOS+Windows, Safari on macOS). MUST check before the deltaX/deltaY
-    // comparison below — pinch deltas come through on deltaY.
+    // Ctrl+wheel zooms the PDF, never the browser or the display mode.
+    // Trackpad pinch is synthesized as the same event by desktop browsers.
     if (e.ctrlKey) {
       e.preventDefault();
-      if (currentDisplayMode !== "fullscreen") {
-        // Inline: pinch-in (deltaY<0) is a request to go fullscreen.
-        // Pinch-out is ignored — nothing smaller than inline.
-        if (e.deltaY < 0 && !modeTransitionInFlight) {
-          modeTransitionInFlight = true;
-          void toggleFullscreen().finally(() => {
-            // Hold the latch through the settle window so the tail of the
-            // gesture doesn't immediately start zooming the new fullscreen
-            // view (or, worse, re-toggle).
-            setTimeout(() => (modeTransitionInFlight = false), 250);
-          });
-        }
-        return;
-      }
       if (modeTransitionInFlight) return; // swallow gesture tail post-toggle
-      if (pinchSettleTimer === null) beginPinch();
+      if (!pdfDocument || e.deltaY === 0) return;
+      if (pinchSettleTimer === null) beginPinch(false);
       // exp(-deltaY * k) makes equal-magnitude in/out deltas inverse —
       // pinch out then back lands where you started. Clamp per event so a
       // physical mouse wheel (deltaY ≈ ±100/notch) doesn't slam to the
       // limit; trackpad pinch deltas are ~±1-10 so the clamp is a no-op.
-      const d = Math.max(-25, Math.min(25, e.deltaY));
+      const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
+        : e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? canvasContainerEl.clientHeight : 1;
+      const d = Math.max(-25, Math.min(25, e.deltaY * unit));
       updatePinch(previewScale * Math.exp(-d * 0.01));
       if (pinchSettleTimer) clearTimeout(pinchSettleTimer);
       // 200ms — slow trackpad pinches can leave >150ms gaps between wheel

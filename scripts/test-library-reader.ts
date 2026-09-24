@@ -276,6 +276,40 @@ try {
     check(`${mode}: real mouse wheel scrolls the PDF down/up while controls stay fixed`);
   }
   await checkWheelScroll("fullscreen sidebar");
+  async function checkCtrlWheelZoom(mode: string) {
+    const area = view.locator(".canvas-container");
+    const initialClass = await view.locator(".main").getAttribute("class");
+    const toolbarWidth = (await view.locator(".zoom-bar").boundingBox())!.width;
+    const canvasWidth = () => view.locator("#pdf-canvas").evaluate(el => el.getBoundingClientRect().width);
+    async function wheel(delta: number) {
+      await area.hover();
+      await page.keyboard.down("Control");
+      try { await page.mouse.wheel(0, delta); }
+      finally { await page.keyboard.up("Control"); }
+    }
+    await zoom.fill("100"); await zoom.press("Enter");
+    await expect.poll(canvasWidth).toBe(612);
+    await wheel(-100);
+    await expect.poll(canvasWidth).toBeGreaterThan(612);
+    const enlarged = await canvasWidth();
+    await wheel(100);
+    await expect.poll(canvasWidth).toBeLessThan(enlarged);
+    await expect(zoom).toHaveValue("100%");
+    // Both limits must work without exiting the sidebar or expanding inline.
+    for (const [percent, delta] of [[300, -100], [50, 100]]) {
+      await zoom.fill(String(percent)); await zoom.press("Enter");
+      await expect.poll(canvasWidth).toBe(612 * percent / 100);
+      await wheel(delta);
+      await expect.poll(() => view.locator(".page-wrapper").evaluate(el => el.style.transform)).toBe("");
+      await expect(zoom).toHaveValue(`${percent}%`);
+      await expect(view.locator(".main")).toHaveAttribute("class", initialClass!);
+    }
+    assert.equal((await view.locator(".zoom-bar").boundingBox())!.width, toolbarWidth);
+    await zoom.fill("150"); await zoom.press("Enter");
+    await expect.poll(canvasWidth).toBe(918);
+    check(`${mode}: real Ctrl+wheel zooms both directions, respects limits and preserves display mode`);
+  }
+  await checkCtrlWheelZoom("fullscreen sidebar");
   await view.locator(".canvas-container").evaluate(el => { el.scrollTop = 500; el.scrollLeft = 200; });
   const controls = await view.locator(".zoom-bar button, #zoom-level").evaluateAll(elements => elements.map(el => {
     const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth;
@@ -301,6 +335,7 @@ try {
   await zoom.fill("150"); await zoom.press("Enter");
   await expect.poll(() => view.locator("#pdf-canvas").evaluate(el => el.getBoundingClientRect().width)).toBe(918);
   await checkWheelScroll("inline reader");
+  await checkCtrlWheelZoom("inline reader");
   await expect(view.locator("#page-input")).toHaveValue("3");
   check("editable zoom, plus/minus, limits, navigation persistence, reachable page edges, fixed controls and width/page fit");
   await view.locator("#library-home").click();
