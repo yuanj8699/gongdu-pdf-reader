@@ -206,6 +206,10 @@ gh auth login --hostname github.com --web --git-protocol https
 组织还可能要求 SSO 授权；细粒度令牌需配置目标仓库 Contents 只读权限。授权失效明确报错，不静默切换账号。
 退出本机账号使用 `gh auth logout --hostname github.com`；已入库文件仍在本机保留并可离线阅读。
 
+点击“打开仓库”后，按钮附近显示版本确认和目录读取进度，成功后滚动到目录。按钮和输入框回车直接触发读取，
+不依赖嵌入窗口允许表单提交。普通 GitHub 请求超过 30 秒未返回时显示超时提示并恢复按钮；迟到的返回不会覆盖
+后续操作。下载请求保留 180 秒等待，超时后先刷新书库检查是否已完成入库。
+
 PDF 上限 100 MB，文本上限 1 MB／10000 行。仅支持 UTF-8 文本；不读取符号链接、子模块、Git LFS 实体或其他
 二进制文件。下载仅请求 `api.github.com`，不跟随重定向，使用 Git blob SHA 校验内容；迁移仓库请改填新地址。
 GitHub 限流、权限不足、网络超时会显示错误，用户可手动重试。
@@ -223,7 +227,9 @@ PDF 仍按文件页码保存。所有原件在现有独立书库目录，源码�
 验证：GitHub API 固定样例覆盖公共／授权读取、版本隔离、旧书库升级、重启离线读取、错误凭据、重定向、
 损坏／超大／二进制文件。真实 MCP＋SQLite＋浏览器覆盖 380px 侧栏中收藏→目录→Markdown／代码／PDF→
 选区问答→返回书库、消息拒收提示和位置恢复。GitHub 响应在这些检查中为固定样例，不冒充真实账号验证。
-本次真实公共 GitHub API 请求遭遇匿名额度限流；登录后的收藏和私有仓库链路、当前桌面刷新后的新入口仍待实测。
+最初真实公共 API 检查遭遇匿名额度限流；2026-09-28 已通过当前 MCP 连接验证登录账号，以及 `earendil-works/pi`
+的提交解析和目录读取。真实收藏／私有仓库下载及当前桌面点击新按钮仍待实测。浏览器回归另覆盖不允许表单提交的
+沙箱、按钮和回车、限流错误、宿主未返回时的超时恢复，以及迟到结果不覆盖新操作。
 
 接口依据：[GitHub 仓库内容](https://docs.github.com/en/rest/repos/contents)、
 [Git Trees](https://docs.github.com/en/rest/git/trees)、[Git Blobs](https://docs.github.com/en/rest/git/blobs)、

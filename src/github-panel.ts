@@ -7,10 +7,11 @@ export function createGithubPanel(container: HTMLElement, call: LibraryCall, ref
     <p id="github-account" role="status"></p><button id="github-account-refresh" type="button">刷新账号</button>
     <p class="library-note">公共仓库可直接阅读。收藏及私有仓库请先在本机终端执行 <code>gh auth login --hostname github.com</code>，完成浏览器授权后刷新账号。</p>
     <form id="github-open"><label>仓库链接或 owner/repo<input id="github-repository" placeholder="例如 modelcontextprotocol/ext-apps" required></label>
-    <label>分支、标签或提交（留空使用默认分支）<input id="github-ref" placeholder="例如 main"></label><button>打开仓库</button></form>
-    <form id="github-search"><label>搜索仓库<input id="github-query" placeholder="仓库名称或关键词" required></label><button>搜索</button></form>
+    <label>分支、标签或提交（留空使用默认分支）<input id="github-ref" placeholder="例如 main"></label><button type="button">打开仓库</button></form>
+    <p id="github-status" role="status" aria-live="polite"></p>
+    <form id="github-search"><label>搜索仓库<input id="github-query" placeholder="仓库名称或关键词" required></label><button type="button">搜索</button></form>
     <div class="github-actions"><button id="github-starred" type="button">我的收藏</button><button id="github-mine" type="button">我的仓库</button></div>
-    <p id="github-status" role="status" aria-live="polite"></p><ul id="github-repositories"></ul>
+    <ul id="github-repositories"></ul>
     <div class="github-actions"><button id="github-previous" type="button" hidden>上一页</button><button id="github-next" type="button" hidden>下一页</button></div>
     <p id="github-location"></p><button id="github-parent" type="button" hidden>上一级目录</button><ul id="github-files"></ul></details>`;
   const el = <T extends HTMLElement = HTMLElement>(id: string) => container.querySelector<T>(`#${id}`)!;
@@ -53,10 +54,13 @@ export function createGithubPanel(container: HTMLElement, call: LibraryCall, ref
     status.textContent = entries.length ? `${entries.length} 项 · 点击文件入库并阅读` : "此目录为空。";
   }
   async function open(repository: string, ref?: string) {
+    status.textContent = `正在确认 ${repository} 的版本…`;
     const resolved = await call<{ repository: string; commit: string }>("github_resolve", { repository, ...(ref ? { ref } : {}) });
+    status.textContent = `正在读取 ${resolved.repository} 的目录…`;
     el<HTMLInputElement>("github-repository").value = resolved.repository;
     el<HTMLInputElement>("github-ref").value = ref ?? "";
     await directory(resolved.repository, resolved.commit);
+    el("github-location").scrollIntoView({ block: "nearest" });
   }
   async function repositories(nextKind = kind, nextPage = page, nextQuery = query) {
     const data = await call<{ repositories: GitHubRepo[]; hasMore: boolean }>("github_repositories", { kind: nextKind, query: nextQuery, page: nextPage });
@@ -72,8 +76,20 @@ export function createGithubPanel(container: HTMLElement, call: LibraryCall, ref
     el("github-previous").hidden = page === 1; el("github-next").hidden = !data.hasMore || page >= 100;
     status.textContent = data.repositories.length ? `第 ${page} 页 · ${data.repositories.length} 个仓库` : "没有找到仓库。";
   }
-  el("github-open").addEventListener("submit", e => { e.preventDefault(); void action(() => open(el<HTMLInputElement>("github-repository").value, el<HTMLInputElement>("github-ref").value.trim())); });
-  el("github-search").addEventListener("submit", e => { e.preventDefault(); void action(() => repositories("search", 1, el<HTMLInputElement>("github-query").value)); });
+  // Some embedded hosts disallow form submission before dispatching `submit`.
+  // Invoke read actions from explicit buttons and Enter, without native submission.
+  function bindForm(id: string, run: () => Promise<void>) {
+    const form = el<HTMLFormElement>(id);
+    const invoke = () => {
+      if (!form.checkValidity()) { status.textContent = id === "github-open" ? "请先填写仓库链接或 owner/repo。" : "请先填写搜索关键词。"; form.reportValidity(); return; }
+      void action(run);
+    };
+    form.querySelector("button")!.addEventListener("click", invoke);
+    form.addEventListener("keydown", event => { if (event.key === "Enter" && !event.isComposing && event.target instanceof HTMLInputElement) { event.preventDefault(); invoke(); } });
+    form.addEventListener("submit", event => { event.preventDefault(); });
+  }
+  bindForm("github-open", () => open(el<HTMLInputElement>("github-repository").value.trim(), el<HTMLInputElement>("github-ref").value.trim()));
+  bindForm("github-search", () => repositories("search", 1, el<HTMLInputElement>("github-query").value.trim()));
   el("github-starred").addEventListener("click", () => void action(() => repositories("starred", 1)));
   el("github-mine").addEventListener("click", () => void action(() => repositories("mine", 1)));
   el("github-previous").addEventListener("click", () => void action(() => repositories(kind, page - 1)));

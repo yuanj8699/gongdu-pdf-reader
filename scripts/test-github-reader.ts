@@ -24,9 +24,11 @@ const hostBuild = await Bun.build({ entrypoints: [path.join(root, "tests/host.ts
 assert.ok(hostBuild.success);
 const hostScript = await hostBuild.outputs[0].text();
 const viewIds = new Set<string>();
+let resolveMode: "normal" | "error" | "hold" = "normal";
+let heldResolve: (() => void) | undefined;
 const http = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
   const url = new URL(request.url);
-  if (url.pathname === "/") return new Response('<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%}iframe{border:0;width:100%;height:100%}</style><iframe title="PDF reader"></iframe><script type="module" src="/host.js"></script>', { headers: { "content-type": "text/html" } });
+  if (url.pathname === "/") return new Response('<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%}iframe{border:0;width:100%;height:100%}</style><iframe title="PDF reader" sandbox="allow-scripts allow-same-origin"></iframe><script type="module" src="/host.js"></script>', { headers: { "content-type": "text/html" } });
   if (url.pathname === "/host.js") return new Response(hostScript, { headers: { "content-type": "application/javascript" } });
   if (url.pathname === "/app") return new Response(appResource.text, { headers: { "content-type": "text/html" } });
   if (url.pathname === "/initial") {
@@ -38,6 +40,10 @@ const http = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
   }
   if (url.pathname === "/tool") {
     const params = await request.json() as { name: string; arguments: Record<string, unknown> };
+    if (params.name === "github_resolve" && resolveMode === "error") return Response.json({ isError: true, content: [{ type: "text", text: "GitHub 请求次数受限，请稍后重试。" }] });
+    if (params.name === "github_resolve" && resolveMode === "hold") return new Promise<Response>(resolve => {
+      heldResolve = () => resolve(Response.json({ content: [], structuredContent: { repository: "late/wrong", commit: commitA } }));
+    });
     const result = await client.callTool(params);
     if (params.name === "display_pdf" && result._meta?.viewUUID) viewIds.add(String(result._meta.viewUUID));
     return Response.json(result);
@@ -58,6 +64,32 @@ try {
   await page.goto(base);
   await view.getByText("从 GitHub 找资料", { exact: true }).click();
   await expect(view.locator("#github-account")).toContainText("learner");
+  await view.getByRole("button", { name: "打开仓库", exact: true }).click();
+  await expect(view.locator("#github-status")).toContainText("请先填写");
+  await view.locator("#github-repository").fill("learner/course");
+  await view.getByRole("button", { name: "打开仓库", exact: true }).click();
+  await expect(view.locator("#github-location")).toContainText(commitA.slice(0, 12), { timeout: 4000 });
+  resolveMode = "error";
+  await view.locator("#github-ref").press("Enter");
+  await expect(view.locator("#github-status")).toContainText("受限");
+  await expect(view.getByRole("button", { name: "打开仓库", exact: true })).toBeEnabled();
+  resolveMode = "hold";
+  await page.clock.install();
+  await view.getByRole("button", { name: "打开仓库", exact: true }).click();
+  await expect.poll(() => Boolean(heldResolve)).toBe(true);
+  await expect(view.locator("#github-status")).toContainText("正在确认 learner/course");
+  await expect(view.getByRole("button", { name: "打开仓库", exact: true })).toBeDisabled();
+  await page.clock.fastForward(31000);
+  await expect(view.locator("#github-status")).toContainText("已超时");
+  await expect(view.getByRole("button", { name: "打开仓库", exact: true })).toBeEnabled();
+  heldResolve!(); resolveMode = "normal";
+  await view.locator("#github-ref").press("Enter");
+  await expect(view.locator("#github-status")).toContainText("点击文件入库");
+  await expect(view.locator("#github-repository")).toHaveValue("learner/course");
+  await view.locator("#github-query").fill("learning");
+  await view.locator("#github-search button").click();
+  await expect(view.locator("#github-repositories")).toContainText("learner/course");
+  console.log("PASS sandboxed open/search buttons, Enter, required inputs, visible API errors, host timeout recovery and ignoring late replies.");
   await view.locator("#github-starred").click();
   await expect(view.locator("#github-repositories")).toContainText("learner/course");
   await view.locator("#github-repositories button").click();
@@ -97,7 +129,9 @@ try {
     const range = document.createRange(); range.setStart(first, 0); range.setEnd(last, last.childNodes.length);
     const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); document.dispatchEvent(new Event("selectionchange"));
   });
+  const beforeMultiline = await page.evaluate(() => (window as any).observations.messages.length);
   await view.locator("#text-reader-explain").click();
+  await expect.poll(() => page.evaluate(() => (window as any).observations.messages.length)).toBe(beforeMultiline + 1);
   const multiline = await page.evaluate(() => (window as any).observations.messages.at(-1).content[0].text);
   const multilineContext = JSON.parse(multiline.slice(multiline.indexOf('{"schemaVersion"')));
   assert.equal(multilineContext.selection.text, "export function add(a: number, b: number) {\n  return a + b;");
@@ -108,7 +142,9 @@ try {
   await view.locator("#github-parent").click();
   await view.locator("#github-files").getByRole("button", { name: "paper.pdf", exact: true }).click();
   await expect(view.locator("#text-layer")).toContainText("Alpha unique");
+  const beforePdf = await page.evaluate(() => (window as any).observations.messages.length);
   await select("#text-layer span"); await view.locator("#explain-selection-btn").click();
+  await expect.poll(() => page.evaluate(() => (window as any).observations.messages.length)).toBe(beforePdf + 1);
   const pdfMessage = await page.evaluate(() => (window as any).observations.messages.at(-1).content[0].text);
   assert.ok(pdfMessage.includes(commitA)); assert.ok(pdfMessage.includes('"path":"paper.pdf"'));
   await view.locator("#library-home").click();

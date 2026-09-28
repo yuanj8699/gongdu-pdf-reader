@@ -817,7 +817,18 @@ const librarySaveStatus = document.getElementById("library-save-status")!;
 const libraryMigrationStatus = document.getElementById("library-migration-status")!;
 const libraryRetrySave = document.getElementById("library-retry-save") as HTMLButtonElement;
 const callLibrary: LibraryCall = async <T>(name: string, args: Record<string, unknown>) => {
-  const result = await host.callTool({ name, arguments: args }, name === "github_import_file" ? { timeout: 180000 } : undefined);
+  const timeout = name === "github_import_file" ? 180000 : name.startsWith("github_") ? 30000 : undefined;
+  let result;
+  try {
+    result = await host.callTool({ name, arguments: args }, timeout ? { timeout, maxTotalTimeout: timeout } : undefined);
+  } catch (error) {
+    if (timeout && (error as { code?: string }).code === "REQUEST_TIMEOUT") {
+      throw new Error(name === "github_import_file"
+        ? "下载请求未及时返回，请先刷新书库确认是否已入库，再决定是否重试。"
+        : "阅读器等待客户端返回 GitHub 结果已超时，请重试；若仍无响应，请关闭阅读器后重新打开。");
+    }
+    throw error;
+  }
   if (result.isError) throw new Error(result.content?.filter(c => c.type === "text").map(c => c.text).join("\n") || "书库请求失败。");
   return result.structuredContent as T;
 };
