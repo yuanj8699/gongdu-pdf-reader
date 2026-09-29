@@ -87,6 +87,8 @@ import { createReaderWorkspace } from "./reader-workspace.js";
 import { createReaderSettings } from "./reader-settings.js";
 import { createReadingContext, withNearbyText, findSelectionInText, assertReferenceTarget, type ReadingContext, type SelectionRect } from "./reading-context.js";
 
+import { withSelectionRange } from "./selection-context.js";
+
 const MAX_MODEL_CONTEXT_LENGTH = 15000;
 // Configure PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -283,7 +285,7 @@ function readSelection(): ReadingSelection | null {
     x: round((r.left - origin.left) / scale), y: round((r.top - origin.top) / scale),
     width: round(r.width / scale), height: round(r.height / scale),
   }));
-  return text ? { text, page: currentPage, document: pdfDocument, context: withNearbyText(captureReadingContext(text, rects), pageTextItemsCache.get(currentPage)?.join(" ") ?? "") } : null;
+  return text ? { text, page: currentPage, document: pdfDocument, context: withSelectionRange(captureReadingContext(text, rects), textLayerEl, range) } : null;
 }
 function refreshSelection() {
   selectionSnapshot = readSelection();
