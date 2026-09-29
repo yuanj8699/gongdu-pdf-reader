@@ -108,7 +108,7 @@ export function createLibraryPanel(container: HTMLElement, call: LibraryCall, op
   const arxiv = createArxivPanel(container.querySelector("#arxiv-panel")!, call, refresh, openAsset);
   const local = createLocalLibraryPanel(container.querySelector("#local-library-panel")!, call, refresh);
   const github = createGithubPanel(container.querySelector("#github-panel")!, call, refresh, openAsset);
-  return { async show(arxivEnabled = false, githubEnabled = false) {
+  return { attachReader: github.attachReader, async show(arxivEnabled = false, githubEnabled = false) {
     container.hidden = false;
     try { await refresh(); }
     catch (error) { status.textContent = `读取书库失败：${message(error)}`; }

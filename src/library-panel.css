@@ -69,7 +69,7 @@
 .markdown-reading table { display: block; overflow: auto; border-collapse: collapse; }
 .markdown-reading td, .markdown-reading th { border: 1px solid var(--bg300); padding: .4rem; }
 .markdown-reading a { color: var(--text000); text-decoration: underline; }
-.hljs-keyword, .hljs-built_in { color: #9567cf; }
-.hljs-string, .hljs-title { color: #388e78; }
-.hljs-number, .hljs-literal { color: #bd6933; }
+.hljs-keyword, .hljs-built_in { color: var(--reader-syntax-keyword); }
+.hljs-string, .hljs-title { color: var(--reader-syntax-string); }
+.hljs-number, .hljs-literal { color: var(--reader-syntax-number); }
 .hljs-comment { color: var(--text100); }

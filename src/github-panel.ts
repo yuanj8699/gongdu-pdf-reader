@@ -8,23 +8,28 @@ export function createGithubPanel(container: HTMLElement, call: LibraryCall, ref
     <p class="library-note">公共仓库可直接阅读。收藏及私有仓库请先在本机终端执行 <code>gh auth login --hostname github.com</code>，完成浏览器授权后刷新账号。</p>
     <form id="github-open"><label>仓库链接或 owner/repo<input id="github-repository" placeholder="例如 modelcontextprotocol/ext-apps" required></label>
     <label>分支、标签或提交（留空使用默认分支）<input id="github-ref" placeholder="例如 main"></label><button type="button">打开仓库</button></form>
-    <p id="github-status" role="status" aria-live="polite"></p>
+    <div id="github-navigation-home"></div>
     <form id="github-search"><label>搜索仓库<input id="github-query" placeholder="仓库名称或关键词" required></label><button type="button">搜索</button></form>
     <div class="github-actions"><button id="github-starred" type="button">我的收藏</button><button id="github-mine" type="button">我的仓库</button></div>
     <ul id="github-repositories"></ul>
     <div class="github-actions"><button id="github-previous" type="button" hidden>上一页</button><button id="github-next" type="button" hidden>下一页</button></div>
-    <p id="github-location"></p><button id="github-parent" type="button" hidden>上一级目录</button><ul id="github-files"></ul></details>`;
-  const el = <T extends HTMLElement = HTMLElement>(id: string) => container.querySelector<T>(`#${id}`)!;
+    </details>`;
+  const navigation = document.createElement("div");
+  navigation.className = "github-navigation";
+  navigation.innerHTML = `<p id="github-location"></p><button id="github-parent" type="button" hidden>上一级目录</button><p id="github-status" role="status" aria-live="polite"></p><ul id="github-files" aria-label="仓库文件"></ul>`;
+  container.querySelector("#github-navigation-home")!.append(navigation);
+  const el = <T extends HTMLElement = HTMLElement>(id: string) => (container.querySelector<T>(`#${id}`) ?? navigation.querySelector<T>(`#${id}`))!;
+  let selectedPath = "";
   let current: GitHubDirectory | null = null, busy = false, kind: "search" | "starred" | "mine" = "search", query = "", page = 1;
   const status = el("github-status");
   async function action(fn: () => Promise<void>) {
     if (busy) return;
     busy = true; status.textContent = "正在读取 GitHub…";
     container.setAttribute("aria-busy", "true");
-    for (const b of container.querySelectorAll("button")) b.disabled = true;
+    for (const b of [...container.querySelectorAll("button"), ...navigation.querySelectorAll("button")]) b.disabled = true;
     try { await fn(); }
     catch (error) { status.textContent = error instanceof Error ? error.message : String(error); }
-    finally { busy = false; container.removeAttribute("aria-busy"); for (const b of container.querySelectorAll("button")) b.disabled = b.dataset.unsupported === "true"; }
+    finally { busy = false; container.removeAttribute("aria-busy"); for (const b of [...container.querySelectorAll("button"), ...navigation.querySelectorAll("button")]) b.disabled = b.dataset.unsupported === "true"; }
   }
   async function account() {
     const data = await call<{ connected: boolean; login: string | null }>("github_account", {});
@@ -41,13 +46,15 @@ export function createGithubPanel(container: HTMLElement, call: LibraryCall, ref
       const li = document.createElement("li"), button = document.createElement("button"); button.type = "button";
       button.textContent = `${entry.type === "dir" ? "目录 · " : ""}${entry.name}${entry.type === "unsupported" ? "（链接／子模块，暂不支持）" : ""}`;
       button.disabled = entry.type === "unsupported"; button.dataset.unsupported = String(button.disabled);
+      button.dataset.path = entry.path;
+      if (entry.path === selectedPath) button.setAttribute("aria-current", "page");
       button.addEventListener("click", () => void action(async () => {
         if (entry.type === "dir") await directory(repository, commit, entry.path);
         else {
           status.textContent = `正在下载并校验 ${entry.name}…`;
           const asset = await call<LibraryAsset>("github_import_file", { repository, commit, path: entry.path });
-          await refreshLibrary(); status.textContent = `已入库：${entry.name} · ${commit.slice(0, 12)}`;
           await openAsset(asset.assetId);
+          await refreshLibrary(); status.textContent = `正在阅读：${entry.name} · ${commit.slice(0, 12)}`;
         }
       })); li.append(button); el("github-files").append(li);
     }
@@ -96,7 +103,24 @@ export function createGithubPanel(container: HTMLElement, call: LibraryCall, ref
   el("github-next").addEventListener("click", () => void action(() => repositories(kind, page + 1)));
   el("github-parent").addEventListener("click", () => { if (current) void action(() => directory(current!.repository, current!.commit, current!.path.split("/").slice(0, -1).join("/"))); });
   el("github-account-refresh").addEventListener("click", () => void action(async () => { await account(); status.textContent = "账号状态已刷新。"; }));
-  return { async show(enabled: boolean) {
+  return {
+    async attachReader(dock: HTMLElement, asset?: LibraryAsset) {
+      const source = asset?.githubSource;
+      if (!source) return;
+      dock.append(navigation);
+      selectedPath = source.path;
+      const parent = source.path.split("/").slice(0, -1).join("/");
+      if (current?.repository !== source.repository || current.commit !== source.commit || current.path !== parent) {
+        try { await directory(source.repository, source.commit, parent); }
+        catch (error) { current = null; el("github-files").replaceChildren(); status.textContent = `目录读取失败：${error instanceof Error ? error.message : String(error)}。可返回书库重新打开仓库。`; }
+      }
+      for (const button of navigation.querySelectorAll<HTMLButtonElement>("[data-path]")) {
+        if (button.dataset.path === selectedPath) button.setAttribute("aria-current", "page");
+        else button.removeAttribute("aria-current");
+      }
+    },
+    async show(enabled: boolean) {
+    container.querySelector("#github-navigation-home")!.append(navigation);
     container.hidden = !enabled;
     if (enabled) try { await account(); } catch (error) { el("github-account").textContent = error instanceof Error ? error.message : String(error); }
   } };

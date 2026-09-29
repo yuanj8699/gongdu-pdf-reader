@@ -1,0 +1,38 @@
+/* Shared product tokens. Components consume these rather than owning palettes. */
+:root {
+  --reader-accent: light-dark(#235c4a, #93dabd);
+  --reader-accent-hover: light-dark(#194936, #b2e7cf);
+  --reader-on-accent: light-dark(#ffffff, #102d22);
+  --reader-syntax-keyword: light-dark(#7041a8, #c4a4ee);
+  --reader-syntax-string: light-dark(#246e5b, #80cfb5);
+  --reader-syntax-number: light-dark(#954d1d, #edaf7a);
+  --reader-radius: .4rem;
+  --reader-space: .5rem;
+  --reader-font-size: 16px;
+  --reader-navigation-width: 240px;
+  --reader-overlay-layer: 20;
+}
+#reading-workspace { display: flex; flex: 1; min-height: 0; min-width: 0; position: relative; overflow: hidden; }
+#reading-workspace[hidden], #repository-navigation[hidden] { display: none; }
+#reader-stage { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+#repository-navigation { flex: 0 0 var(--reader-navigation-width); min-width: 0; overflow: auto; border-right: 1px solid var(--bg200); background: var(--bg000); padding: calc(var(--reader-space) * 2); }
+#repository-navigation .github-navigation { display: flex; flex-direction: column; height: 100%; }
+.github-navigation p { font-size: .8rem; line-height: 1.5; overflow-wrap: anywhere; }
+#repository-navigation #github-files { flex: 1; min-height: 0; max-height: none; display: block; }
+#repository-navigation #github-files li { margin-bottom: var(--reader-space); }
+.github-navigation button { font: inherit; font-size: .8rem; padding: var(--reader-space); color: var(--text000); background: var(--bg000); border: 1px solid var(--bg200); border-radius: var(--reader-radius); cursor: pointer; }
+.github-navigation button:hover { background: var(--bg100); }
+.github-navigation button[aria-current="page"] { color: var(--reader-accent); border-color: var(--reader-accent); background: var(--bg100); font-weight: 600; }
+.github-navigation button:disabled { opacity: .55; cursor: default; }
+.reader-settings { margin-left: auto; }
+.reader-settings summary { cursor: pointer; font-size: .8rem; }
+.reader-settings-controls { display: flex; gap: calc(var(--reader-space) * 2); flex-wrap: wrap; padding-top: var(--reader-space); }
+.reader-settings label { display: flex; align-items: center; gap: var(--reader-space); font-size: .8rem; }
+.reader-settings select { font: inherit; color: var(--text000); background: var(--bg000); border: 1px solid var(--bg300); border-radius: var(--reader-radius); padding: var(--reader-space); }
+#text-reader-content { font-size: var(--reader-font-size); }
+#text-reader-content .source-line { font-size: .9em; }
+.markdown-reading > section { max-width: 72ch; margin-inline: auto; }
+@media (max-width: 680px) {
+  #repository-navigation { position: absolute; inset: 0 auto 0 0; width: min(var(--reader-navigation-width), 85%); z-index: var(--reader-overlay-layer); }
+  #reading-workspace.navigation-open #reader-stage { pointer-events: none; }
+}

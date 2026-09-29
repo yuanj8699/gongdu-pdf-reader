@@ -136,11 +136,11 @@ body {
 }
 .reader-action:hover { background: var(--bg200); }
 .reader-action:focus-visible, button:focus-visible {
-  outline: 2px solid light-dark(#235c4a, #7bd3af);
+  outline: 2px solid var(--reader-accent);
   outline-offset: 2px;
 }
-.reader-primary { background: light-dark(#235c4a, #93dabd); color: light-dark(#fff, #102d22); border-color: transparent; }
-.reader-primary:hover { background: light-dark(#194936, #b2e7cf); }
+.reader-primary { background: var(--reader-accent); color: var(--reader-on-accent); border-color: transparent; }
+.reader-primary:hover { background: var(--reader-accent-hover); }
 .reader-action:disabled { opacity: 0.55; cursor: default; }
 .selection-bar {
   display: flex;

@@ -83,6 +83,8 @@ import { createLibraryPanel, legacyReadingState, type LibraryCall } from "./libr
 import type { LibraryAsset, ReadingState } from "./library-types.js";
 import { createTextReader } from "./text-reader.js";
 import { HostBridge } from "./host-bridge.js";
+import { createReaderWorkspace } from "./reader-workspace.js";
+import { createReaderSettings } from "./reader-settings.js";
 import { createReadingContext, withNearbyText, findSelectionInText, assertReferenceTarget, type ReadingContext, type SelectionRect } from "./reading-context.js";
 
 const MAX_MODEL_CONTEXT_LENGTH = 15000;
@@ -811,6 +813,8 @@ const host = new HostBridge(app);
 let arxivEnabled = false;
 let githubEnabled = false;
 const libraryBar = document.getElementById("library-bar")!;
+const readerWorkspace = createReaderWorkspace();
+const readerSettings = createReaderSettings(libraryBar);
 const libraryHome = document.getElementById("library-home") as HTMLButtonElement;
 const libraryAddCurrent = document.getElementById("library-add-current") as HTMLButtonElement;
 const librarySaveStatus = document.getElementById("library-save-status")!;
@@ -4914,6 +4918,7 @@ async function handleReaderResult(result: CallToolResult) {
   githubEnabled = result._meta?.githubEnabled === true;
   libraryAddCurrent.hidden = true;
   if ((result.structuredContent as { kind?: string } | undefined)?.kind === "library") {
+    readerWorkspace.hide();
     currentPage = 1; totalPages = 0; pdfUrl = ""; pdfTitle = undefined;
     loadingEl.style.display = "none"; errorEl.style.display = "none"; viewerEl.style.display = "none";
     try {
@@ -4928,7 +4933,10 @@ async function handleReaderResult(result: CallToolResult) {
   if ((result.structuredContent as { kind?: string } | undefined)?.kind === "text") {
     currentPage = 1; totalPages = 0; pdfUrl = ""; pdfTitle = undefined;
     loadingEl.style.display = "none"; errorEl.style.display = "none"; viewerEl.style.display = "none";
-    await textReader.show(result.structuredContent as unknown as { asset: LibraryAsset; text: string; state: ReadingState });
+    const data = result.structuredContent as unknown as { asset: LibraryAsset; text: string; state: ReadingState };
+    readerWorkspace.show(data.asset);
+    await textReader.show(data);
+    await libraryPanel.attachReader(readerWorkspace.dock, data.asset);
     return;
   }
   log.info("Received tool result:", result);
@@ -4941,6 +4949,8 @@ async function handleReaderResult(result: CallToolResult) {
 
   pdfUrl = parsed.url;
   currentLibraryAsset = parsed.libraryAsset;
+  readerWorkspace.show(currentLibraryAsset);
+  await libraryPanel.attachReader(readerWorkspace.dock, currentLibraryAsset);
   libraryAddCurrent.hidden = libraryBar.hidden || Boolean(currentLibraryAsset) || /^(https?):/.test(pdfUrl);
   pdfTitle = parsed.title || decodeURIComponent(parsed.url).split(/[\\/]/).pop()?.split("?")[0] || "PDF";
   // Note: pageCount may not be accurate until document loads
@@ -5411,6 +5421,7 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
   // Apply theme from host
   if (ctx.theme) {
     applyDocumentTheme(ctx.theme);
+    readerSettings.followHost(ctx.theme);
   }
 
   // Apply host CSS variables
