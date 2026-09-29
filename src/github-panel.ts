@@ -19,7 +19,8 @@ export function createGithubPanel(container: HTMLElement, call: LibraryCall, ref
   navigation.innerHTML = `<p id="github-location"></p><button id="github-parent" type="button" hidden>上一级目录</button><p id="github-status" role="status" aria-live="polite"></p><ul id="github-files" aria-label="仓库文件"></ul>`;
   container.querySelector("#github-navigation-home")!.append(navigation);
   const el = <T extends HTMLElement = HTMLElement>(id: string) => (container.querySelector<T>(`#${id}`) ?? navigation.querySelector<T>(`#${id}`))!;
-  let selectedPath = "";
+  let selectedSource: LibraryAsset["githubSource"];
+  let directoryRevision = 0;
   let current: GitHubDirectory | null = null, busy = false, kind: "search" | "starred" | "mine" = "search", query = "", page = 1;
   const status = el("github-status");
   async function action(fn: () => Promise<void>) {
@@ -36,7 +37,18 @@ export function createGithubPanel(container: HTMLElement, call: LibraryCall, ref
     el("github-account").textContent = data.connected ? `已连接：${data.login}` : "未登录 · 可浏览公共仓库";
   }
   async function directory(repository: string, commit: string, path = "") {
-    const data = await call<GitHubDirectory>("github_directory", { repository, commit, path });
+    const revision = ++directoryRevision;
+    current = null;
+    el("github-files").replaceChildren();
+    el("github-location").textContent = `${repository} · ${commit.slice(0, 12)} · /${path}`;
+    el("github-parent").hidden = true;
+    let data: GitHubDirectory;
+    try { data = await call<GitHubDirectory>("github_directory", { repository, commit, path }); }
+    catch (error) {
+      if (revision === directoryRevision) status.textContent = `目录读取失败：${error instanceof Error ? error.message : String(error)}。可返回书库重新打开仓库。`;
+      return;
+    }
+    if (revision !== directoryRevision) return;
     current = data;
     el("github-location").textContent = `${data.repository} · ${commit.slice(0, 12)} · /${path}`;
     el("github-parent").hidden = !path;
@@ -47,7 +59,7 @@ export function createGithubPanel(container: HTMLElement, call: LibraryCall, ref
       button.textContent = `${entry.type === "dir" ? "目录 · " : ""}${entry.name}${entry.type === "unsupported" ? "（链接／子模块，暂不支持）" : ""}`;
       button.disabled = entry.type === "unsupported"; button.dataset.unsupported = String(button.disabled);
       button.dataset.path = entry.path;
-      if (entry.path === selectedPath) button.setAttribute("aria-current", "page");
+      if (selectedSource?.repository === repository && selectedSource.commit === commit && entry.path === selectedSource.path) button.setAttribute("aria-current", "page");
       button.addEventListener("click", () => void action(async () => {
         if (entry.type === "dir") await directory(repository, commit, entry.path);
         else {
@@ -106,20 +118,22 @@ export function createGithubPanel(container: HTMLElement, call: LibraryCall, ref
   return {
     async attachReader(dock: HTMLElement, asset?: LibraryAsset) {
       const source = asset?.githubSource;
-      if (!source) return;
+      if (!source) { directoryRevision++; selectedSource = undefined; return; }
       dock.append(navigation);
-      selectedPath = source.path;
+      selectedSource = source;
       const parent = source.path.split("/").slice(0, -1).join("/");
       if (current?.repository !== source.repository || current.commit !== source.commit || current.path !== parent) {
-        try { await directory(source.repository, source.commit, parent); }
-        catch (error) { current = null; el("github-files").replaceChildren(); status.textContent = `目录读取失败：${error instanceof Error ? error.message : String(error)}。可返回书库重新打开仓库。`; }
+        await directory(source.repository, source.commit, parent);
       }
+      if (selectedSource !== source || !dock.contains(navigation)) return;
       for (const button of navigation.querySelectorAll<HTMLButtonElement>("[data-path]")) {
-        if (button.dataset.path === selectedPath) button.setAttribute("aria-current", "page");
+        if (current?.repository === source.repository && current.commit === source.commit && button.dataset.path === source.path) button.setAttribute("aria-current", "page");
         else button.removeAttribute("aria-current");
       }
     },
     async show(enabled: boolean) {
+    directoryRevision++;
+    selectedSource = undefined;
     container.querySelector("#github-navigation-home")!.append(navigation);
     container.hidden = !enabled;
     if (enabled) try { await account(); } catch (error) { el("github-account").textContent = error instanceof Error ? error.message : String(error); }

@@ -85,6 +85,7 @@ import { createTextReader } from "./text-reader.js";
 import { HostBridge } from "./host-bridge.js";
 import { createReaderWorkspace } from "./reader-workspace.js";
 import { createReaderSettings } from "./reader-settings.js";
+import { createStudyPanel, type StudyContext } from "./study-panel.js";
 import { createReadingContext, withNearbyText, findSelectionInText, assertReferenceTarget, type ReadingContext, type SelectionRect } from "./reading-context.js";
 
 import { withSelectionRange } from "./selection-context.js";
@@ -273,9 +274,11 @@ let selectionSnapshot: ReadingSelection | null = null;
 let pressedSelection: ReadingSelection | null = null;
 let explanationSending = false;
 let contextRevision = 0;
+let renderedText: { generation: number; page: number } | null = null;
 function readSelection(): ReadingSelection | null {
   const selection = window.getSelection();
   if (!pdfDocument || !selection?.rangeCount || selection.isCollapsed) return null;
+  if (renderedText?.generation !== loadGeneration || renderedText.page !== currentPage) return null;
   const range = selection.getRangeAt(0);
   if (!textLayerEl.contains(range.startContainer) || !textLayerEl.contains(range.endContainer)) return null;
   const text = selection.toString().replace(/\s+/g, " ").trim();
@@ -510,7 +513,7 @@ function requestFitToContent() {
   // All visible control rows + document padding + page + rounding buffer.
   // Note: search bar is absolutely positioned over the document area, so excluded
   const toolbarHeight = toolbarEl.offsetHeight;
-  const extraControlsHeight = Array.from(mainEl.querySelectorAll<HTMLElement>(".zoom-bar, .selection-bar, .library-bar"))
+  const extraControlsHeight = Array.from(mainEl.querySelectorAll<HTMLElement>(".zoom-bar, .selection-bar, .library-bar, .study-panel"))
     .reduce((height, row) => height + row.offsetHeight, 0);
   const pageWrapperHeight = pageWrapperEl.offsetHeight;
   const BUFFER = 10; // Buffer for sub-pixel rounding and browser quirks
@@ -854,6 +857,27 @@ async function openLibraryAsset(assetId: string) {
 }
 const libraryPanel = createLibraryPanel(document.getElementById("library-panel")!, callLibrary, openLibraryAsset);
 const textReader = createTextReader(document.getElementById("text-reader")!, callLibrary, host);
+const studyContainer = document.createElement("section");
+studyContainer.setAttribute("aria-label", "共读实践与笔记");
+libraryBar.after(studyContainer);
+const studyPanel = createStudyPanel(studyContainer, host,
+  () => textReader.context() ?? (pdfDocument ? readSelection()?.context ?? captureReadingContext() : null),
+  async (context: StudyContext) => {
+    if (context.identity.kind !== "library") throw new Error("请先把资料加入书库。");
+    const expected = context.identity;
+    const asset = await callLibrary<LibraryAsset>("library_get_asset", { assetId: expected.assetId });
+    if (asset.sha256 !== expected.sha256 || asset.versionId !== expected.versionId || asset.documentId !== expected.documentId) throw new Error("书库资料版本与记录不一致。");
+    const position = context.location.format === "pdf" ? context.location.pageNumber : context.location.lineStart;
+    if (!Number.isInteger(position) || position < 1 || position > asset.pageCount) throw new Error("记录中的阅读位置超出资料范围。");
+    await openLibraryAsset(asset.assetId);
+    if (context.location.format === "pdf") {
+      if (!pdfDocument || !readingStateReady || errorEl.style.display !== "none") throw new Error("原文尚未成功加载，请检查阅读器的错误提示。");
+      goToPage(position);
+      while (isRendering) await renderFinished;
+      await readingSaveWork;
+      if (readingSaveFailed) throw new Error("原文已打开，但返回位置尚未保存，请重试保存。");
+    } else await textReader.go(position);
+  });
 libraryHome.addEventListener("click", async () => {
   libraryHome.disabled = true;
   try {
@@ -3423,6 +3447,8 @@ let finishRender: (() => void) | undefined;
 // Render current page with text layer for selection
 async function renderPage() {
   if (!pdfDocument) return;
+  renderedText = null;
+  clearReadingSelection();
 
   // If already rendering, queue this page for later
   if (isRendering) {
@@ -3532,6 +3558,8 @@ async function renderPage() {
       viewport,
     });
     await textLayer.render();
+    if (renderGeneration !== loadGeneration || pageToRender !== currentPage) return;
+    renderedText = { generation: renderGeneration, page: pageToRender };
 
     // Cache page text items if not already cached
     if (!pageTextItemsCache.has(pageToRender)) {
@@ -4640,6 +4668,7 @@ async function reloadPdf(): Promise<void> {
 
   // Invalidate all in-flight fetches and the preloader
   loadGeneration++;
+  renderedText = null;
 
   // Drop byte cache — file contents changed, everything is stale.
   // In-flight requests will check loadGeneration before re-populating.
@@ -4883,7 +4912,11 @@ async function startPreloading() {
 // Serialize document changes: a late result must not attach state to another PDF.
 let readerLoadWork: Promise<void> = Promise.resolve();
 function queueReaderResult(result: CallToolResult) {
-  readerLoadWork = readerLoadWork.catch(() => {}).then(() => handleReaderResult(result));
+  readerLoadWork = readerLoadWork.catch(() => {}).then(async () => {
+    studyPanel.setLoading(true);
+    try { await handleReaderResult(result); }
+    finally { studyPanel.setLoading(false); }
+  });
   return readerLoadWork;
 }
 app.ontoolresult = queueReaderResult;
@@ -4938,7 +4971,7 @@ async function handleReaderResult(result: CallToolResult) {
     const data = result.structuredContent as unknown as { asset: LibraryAsset; text: string; state: ReadingState };
     readerWorkspace.show(data.asset);
     await textReader.show(data);
-    await libraryPanel.attachReader(readerWorkspace.dock, data.asset);
+    void libraryPanel.attachReader(readerWorkspace.dock, data.asset);
     return;
   }
   log.info("Received tool result:", result);
@@ -4952,7 +4985,7 @@ async function handleReaderResult(result: CallToolResult) {
   pdfUrl = parsed.url;
   currentLibraryAsset = parsed.libraryAsset;
   readerWorkspace.show(currentLibraryAsset);
-  await libraryPanel.attachReader(readerWorkspace.dock, currentLibraryAsset);
+  void libraryPanel.attachReader(readerWorkspace.dock, currentLibraryAsset);
   libraryAddCurrent.hidden = libraryBar.hidden || Boolean(currentLibraryAsset) || /^(https?):/.test(pdfUrl);
   pdfTitle = parsed.title || decodeURIComponent(parsed.url).split(/[\\/]/).pop()?.split("?")[0] || "PDF";
   // Note: pageCount may not be accurate until document loads

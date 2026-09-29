@@ -17,6 +17,7 @@ export function createTextReader(container: HTMLElement, call: LibraryCall, host
   let asset: LibraryAsset | null = null, text = "", rendered = false, revision = 0, savedLine = 1;
   let snapshot: TextReadingContext | null = null, sending = false, saveTimer: ReturnType<typeof setTimeout> | undefined;
   let saveWork: Promise<unknown> = Promise.resolve();
+  let saveError: string | null = null;
   const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
   function lineElement(node: Node | null) { return (node instanceof Element ? node : node?.parentElement)?.closest<HTMLElement>("[data-line-start]"); }
   function currentContext(): TextReadingContext | null {
@@ -90,8 +91,8 @@ export function createTextReader(container: HTMLElement, call: LibraryCall, host
     const id = asset.assetId, line = savedLine;
     saveWork = saveWork.catch(() => {}).then(async () => {
       await call("library_set_page", { assetId: id, page: line });
-      if (asset?.assetId === id) status.textContent = `第 ${line} 行已保存到书库`;
-    }).catch(error => { if (asset?.assetId === id) status.textContent = `阅读位置保存失败：${errorText(error)}；滚动后重试。`; });
+      if (asset?.assetId === id) { saveError = null; status.textContent = `第 ${line} 行已保存到书库`; }
+    }).catch(error => { if (asset?.assetId === id) { saveError = errorText(error); status.textContent = `阅读位置保存失败：${saveError}；滚动或跳转后重试。`; } });
   }
   content.addEventListener("scroll", () => {
     if (!asset) return;
@@ -123,6 +124,10 @@ export function createTextReader(container: HTMLElement, call: LibraryCall, host
   });
   return {
     context: currentContext,
+    async go(line: number) {
+      go(line); save(); await saveWork;
+      if (saveError) throw new Error(`阅读位置未保存：${saveError}`);
+    },
     async show(data: { asset: LibraryAsset; text: string; state: ReadingState }) {
       asset = data.asset; text = data.text; rendered = asset.githubSource?.format === "markdown"; savedLine = data.state.page ?? 1;
       container.hidden = false; status.textContent = "选中原文，点击解释选中内容。";
@@ -132,6 +137,10 @@ export function createTextReader(container: HTMLElement, call: LibraryCall, host
       el<HTMLInputElement>("text-reader-line").max = String(asset.pageCount);
       render(); go(savedLine); await sync();
     },
-    async hide() { clearTimeout(saveTimer); save(); await saveWork; container.hidden = true; asset = null; snapshot = null; revision++; },
+    async hide() {
+      clearTimeout(saveTimer); save(); await saveWork;
+      if (saveError) throw new Error(`当前文件的阅读位置尚未保存：${saveError}。请重试后再切换。`);
+      container.hidden = true; asset = null; snapshot = null; revision++;
+    },
   };
 }

@@ -63,7 +63,7 @@ export function withNearbyText(context: ReadingContext, pageText: string): Readi
   return { ...context, selection: { ...context.selection,
     contextBefore: match ? pageText.slice(Math.max(0, match.start - 800), match.start) : "",
     contextAfter: match ? pageText.slice(match.end, match.end + 800) : "",
-    ...(!match ? { nearbyTextStatus: "unavailable" as const } : {}),
+    nearbyTextStatus: match ? undefined : "unavailable",
   } };
 }
 

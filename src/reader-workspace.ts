@@ -14,16 +14,17 @@ export function createReaderWorkspace() {
   toggle.type = "button"; toggle.textContent = "仓库目录"; toggle.hidden = true;
   toggle.setAttribute("aria-controls", dock.id);
   document.getElementById("library-home")!.after(toggle);
-  let collapsed = false;
+  let collapsed = false, reading = false;
   const narrow = window.matchMedia("(max-width: 680px)");
   function renderNavigation() {
     workspace.classList.toggle("navigation-open", !collapsed);
     toggle.setAttribute("aria-expanded", String(!collapsed));
     dock.hidden = toggle.hidden || collapsed;
+    stage.inert = narrow.matches && !dock.hidden;
   }
   toggle.addEventListener("click", () => { collapsed = !collapsed; renderNavigation(); });
   narrow.addEventListener("change", () => { collapsed = narrow.matches; renderNavigation(); });
-  workspace.addEventListener("keydown", event => {
+  workspace.parentElement!.addEventListener("keydown", event => {
     if (event.key === "Escape" && narrow.matches && !collapsed) { collapsed = true; renderNavigation(); toggle.focus(); }
   });
   return {
@@ -31,9 +32,11 @@ export function createReaderWorkspace() {
     show(asset?: LibraryAsset) {
       workspace.hidden = false;
       toggle.hidden = !asset?.githubSource;
-      collapsed = narrow.matches;
+      if (!reading || narrow.matches) collapsed = narrow.matches;
+      reading = true;
       renderNavigation();
+      if (narrow.matches) { stage.tabIndex = -1; stage.focus({ preventScroll: true }); }
     },
-    hide() { workspace.hidden = true; toggle.hidden = true; },
+    hide() { workspace.hidden = true; toggle.hidden = true; reading = false; },
   };
 }

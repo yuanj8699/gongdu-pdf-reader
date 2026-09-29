@@ -5,10 +5,14 @@ export function withSelectionRange(context: ReadingContext, layer: HTMLElement, 
   const before = range.cloneRange(), after = range.cloneRange();
   before.selectNodeContents(layer); before.setEnd(range.startContainer, range.startOffset);
   after.selectNodeContents(layer); after.setStart(range.endContainer, range.endOffset);
+  const text = (part: Range) => {
+    const fragment = part.cloneContents();
+    for (const br of fragment.querySelectorAll("br")) br.replaceWith("\n");
+    return (fragment.textContent ?? "").replace(/\s+/g, " ");
+  };
   return { ...context, selection: { ...context.selection,
-    contextBefore: before.toString().replace(/\s+/g, " ").slice(-800),
-    contextAfter: after.toString().replace(/\s+/g, " ").slice(0, 800),
+    contextBefore: text(before).slice(-800),
+    contextAfter: text(after).slice(0, 800),
     nearbyTextStatus: "anchored",
   } };
 }
-
