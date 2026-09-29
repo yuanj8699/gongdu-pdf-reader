@@ -867,16 +867,24 @@ const studyPanel = createStudyPanel(studyContainer, host,
     const expected = context.identity;
     const asset = await callLibrary<LibraryAsset>("library_get_asset", { assetId: expected.assetId });
     if (asset.sha256 !== expected.sha256 || asset.versionId !== expected.versionId || asset.documentId !== expected.documentId) throw new Error("书库资料版本与记录不一致。");
+    if (context.location.format !== (asset.githubSource?.format ?? "pdf")) throw new Error("记录的位置格式与原文不一致。");
     const position = context.location.format === "pdf" ? context.location.pageNumber : context.location.lineStart;
     if (!Number.isInteger(position) || position < 1 || position > asset.pageCount) throw new Error("记录中的阅读位置超出资料范围。");
+    if (context.location.format !== "pdf" && (!Number.isInteger(context.location.lineEnd) || context.location.lineEnd < position || context.location.lineEnd > asset.pageCount)) throw new Error("记录中的行范围无效。");
     await openLibraryAsset(asset.assetId);
     if (context.location.format === "pdf") {
       if (!pdfDocument || !readingStateReady || errorEl.style.display !== "none") throw new Error("原文尚未成功加载，请检查阅读器的错误提示。");
       goToPage(position);
       while (isRendering) await renderFinished;
       await readingSaveWork;
+      if (readerLoadError) throw new Error(readerLoadError);
+      if (currentLibraryAsset?.assetId !== expected.assetId || renderedText?.generation !== loadGeneration || renderedText.page !== position) throw new Error("阅读目标已改变，未完成此次返回。");
       if (readingSaveFailed) throw new Error("原文已打开，但返回位置尚未保存，请重试保存。");
-    } else await textReader.go(position);
+    } else {
+      await textReader.go(position);
+      const current = textReader.context();
+      if (current?.identity.kind !== "library" || current.identity.assetId !== expected.assetId) throw new Error("阅读目标已改变，未完成此次返回。");
+    }
   });
 libraryHome.addEventListener("click", async () => {
   libraryHome.disabled = true;
@@ -4082,6 +4090,7 @@ canvasContainerEl.addEventListener("mousedown", (e) => {
 
 // Keyboard navigation
 document.addEventListener("keydown", (e) => {
+  if (e.defaultPrevented) return;
   // Delete/Backspace to delete selected annotations
   if (
     (e.key === "Delete" || e.key === "Backspace") &&

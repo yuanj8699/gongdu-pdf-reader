@@ -25,7 +25,10 @@ export function createReaderWorkspace() {
   toggle.addEventListener("click", () => { collapsed = !collapsed; renderNavigation(); });
   narrow.addEventListener("change", () => { collapsed = narrow.matches; renderNavigation(); });
   workspace.parentElement!.addEventListener("keydown", event => {
-    if (event.key === "Escape" && narrow.matches && !collapsed) { collapsed = true; renderNavigation(); toggle.focus(); }
+    if (event.key === "Escape" && narrow.matches && !dock.hidden) {
+      event.preventDefault(); event.stopPropagation();
+      collapsed = true; renderNavigation(); toggle.focus();
+    }
   });
   return {
     dock,
