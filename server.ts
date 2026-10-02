@@ -1080,7 +1080,7 @@ async function extractFormFieldInfo(
   const fields: FormFieldInfo[] = [];
   for (let i = 1; i <= pdfDoc.numPages; i++) {
     const page = await pdfDoc.getPage(i);
-    const pageHeight = page.getViewport({ scale: 1.0 }).height;
+    const viewport = page.getViewport({ scale: 1.0 });
     const annotations = await page.getAnnotations();
     for (const ann of annotations) {
       // Only include form widgets (annotationType 20)
@@ -1090,16 +1090,11 @@ async function extractFormFieldInfo(
       const fieldName = ann.fieldName || "";
       const fieldType = ann.fieldType || "unknown";
 
-      // PDF rect is [x1, y1, x2, y2] in bottom-left origin
-      const x1 = Math.min(ann.rect[0], ann.rect[2]);
-      const y1 = Math.min(ann.rect[1], ann.rect[3]);
-      const x2 = Math.max(ann.rect[0], ann.rect[2]);
-      const y2 = Math.max(ann.rect[1], ann.rect[3]);
-      const width = x2 - x1;
-      const height = y2 - y1;
-
-      // Convert to model coords (top-left origin): modelY = pageHeight - pdfY - height
-      const modelY = pageHeight - y2;
+      // The file's native rotation, CropBox and UserUnit all belong to its
+      // top-left model coordinates. A height-only Y flip loses those transforms.
+      const bounds = viewport.convertToViewportRectangle(ann.rect);
+      const x = Math.min(bounds[0], bounds[2]), y = Math.min(bounds[1], bounds[3]);
+      const width = Math.abs(bounds[2] - bounds[0]), height = Math.abs(bounds[3] - bounds[1]);
 
       // Choice widgets (combo/listbox) carry `options` as
       // [{exportValue, displayValue}]. Expose export values — that's
@@ -1115,8 +1110,8 @@ async function extractFormFieldInfo(
         name: fieldName,
         type: fieldType,
         page: i,
-        x: Math.round(x1),
-        y: Math.round(modelY),
+        x: Math.round(x),
+        y: Math.round(y),
         width: Math.round(width),
         height: Math.round(height),
         ...(ann.alternativeText ? { label: ann.alternativeText } : undefined),
@@ -2512,6 +2507,7 @@ IMPORTANT: viewUUID must be the exact UUID returned by display_pdf (e.g. "a1b2c3
 - US Letter = 612×792pt. Margins: top≈y=50, bottom≈y=742, left≈x=72, right≈x=540, center≈(306, 396).
 - Rectangle/circle/stamp x,y is the TOP-LEFT corner. To place a 200×30 box at the TOP of the page: x=72, y=50, width=200, height=30.
 - For highlights/underlines, each rect's y is the TOP of the highlighted region.
+- Page coordinates include the PDF's rotation and crop. Annotation rotation is its own angle relative to the unrotated PDF page; the page's display angle is applied separately.
 
 Annotation types:
 • highlight: rects:[{x,y,width,height}], color?, content? • underline: rects:[{x,y,w,h}], color?

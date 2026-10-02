@@ -265,7 +265,9 @@ function documentStorageKey(): string | undefined {
   return fingerprint ? `reader:${fingerprint}` : undefined;
 }
 let pageLabels: string[] | null = null;
+type PdfViewport = ReturnType<pdfjsLib.PDFPageProxy["getViewport"]>;
 let renderedRotation = 0;
+let renderedViewport: PdfViewport | null = null;
 type ReadingSelection = { text: string; page: number; document: pdfjsLib.PDFDocumentProxy; context: ReadingContext };
 function captureReadingContext(text?: string, rects?: SelectionRect[]): ReadingContext {
   const context = createReadingContext({ asset: currentLibraryAsset, viewUUID, title: pdfTitle || "PDF", uri: pdfUrl,
@@ -1374,7 +1376,7 @@ async function updatePageContext() {
         annotationSection +=
           "\nAnnotations on this page (visible in screenshot):";
         for (const t of onThisPage) {
-          const d = convertToModelCoords(t.def, pageHeightPt);
+          const d = convertToModelCoords(t.def, viewport);
           const selected = selectedAnnotationIds.has(d.id) ? " (SELECTED)" : "";
           if ("rects" in d && d.rects.length > 0) {
             const r = d.rects[0];
@@ -1447,31 +1449,33 @@ async function updatePageContext() {
  * Convert PDF coordinates (bottom-left origin) to screen coordinates
  * relative to the page wrapper. PDF.js viewport handles rotation and scale.
  */
-function pdfRectToScreen(
-  rect: Rect,
-  viewport: { width: number; height: number; scale: number },
-): { left: number; top: number; width: number; height: number } {
-  const s = viewport.scale;
-  // PDF origin is bottom-left, screen origin is top-left
-  const left = rect.x * s;
-  const top = viewport.height - (rect.y + rect.height) * s;
-  const width = rect.width * s;
-  const height = rect.height * s;
-  return { left, top, width, height };
+function pdfRectToScreen(rect: Rect, viewport: PdfViewport): { left: number; top: number; width: number; height: number } {
+  const [x1, y1, x2, y2] = viewport.convertToViewportRectangle([rect.x, rect.y, rect.x + rect.width, rect.y + rect.height]);
+  return { left: Math.min(x1, x2), top: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) };
 }
 
-function pdfPointToScreen(
-  x: number,
-  y: number,
-  viewport: { width: number; height: number; scale: number },
-): { left: number; top: number } {
-  const s = viewport.scale;
-  return { left: x * s, top: viewport.height - y * s };
+function pdfPointToScreen(x: number, y: number, viewport: PdfViewport): { left: number; top: number } {
+  const [left, top] = viewport.convertToViewportPoint(x, y);
+  return { left, top };
 }
 
-/** Convert a screen-space delta (pixels) to a PDF-space delta. */
-function screenToPdfDelta(dx: number, dy: number): { dx: number; dy: number } {
-  return { dx: dx / scale, dy: -dy / scale };
+function screenRectToPdf(rect: Rect, viewport: PdfViewport): Rect {
+  const a = viewport.convertToPdfPoint(rect.x, rect.y);
+  const b = viewport.convertToPdfPoint(rect.x + rect.width, rect.y + rect.height);
+  return { x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), width: Math.abs(b[0] - a[0]), height: Math.abs(b[1] - a[1]) };
+}
+
+/** Annotation elements use the unrotated page, preserving their own appearance
+ * and handles. Map that layer as a whole into the actual reading viewport. */
+function annotationViewMatrix(from: PdfViewport, to: PdfViewport): DOMMatrix {
+  return new DOMMatrix(to.transform).multiply(new DOMMatrix(from.transform).inverse());
+}
+
+/** A mouse delta has no origin; inverse points cancel the viewport translation. */
+function screenToPdfDelta(dx: number, dy: number, viewport = renderedViewport): { dx: number; dy: number } {
+  if (!viewport) return { dx: 0, dy: 0 };
+  const start = viewport.convertToPdfPoint(0, 0), end = viewport.convertToPdfPoint(dx, dy);
+  return { dx: end[0] - start[0], dy: end[1] - start[1] };
 }
 
 // =============================================================================
@@ -1693,6 +1697,8 @@ function setupAnnotationInteraction(
 
     // Start drag for draggable types (only single-select)
     if (DRAGGABLE_TYPES.has(tracked.def.type) && !e.shiftKey) {
+      // Keep a retained text selection from starting a native browser drag.
+      e.preventDefault();
       startDrag(e, tracked);
     }
   });
@@ -1714,6 +1720,9 @@ function setupAnnotationInteraction(
 }
 
 function startDrag(e: MouseEvent, tracked: TrackedAnnotation): void {
+  const viewport = renderedViewport;
+  if (!viewport) return;
+  const pixelScale = viewport.scale * viewport.userUnit;
   const def = tracked.def;
   const startX = e.clientX;
   const startY = e.clientY;
@@ -1735,10 +1744,11 @@ function startDrag(e: MouseEvent, tracked: TrackedAnnotation): void {
     const dx = ev.clientX - startX;
     const dy = ev.clientY - startY;
     if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
-    // Move elements directly for smooth feedback
+    // Match the final PDF delta while previewing inside the unrotated layer.
+    const delta = screenToPdfDelta(dx, dy, viewport);
     for (let i = 0; i < tracked.elements.length; i++) {
-      tracked.elements[i].style.left = `${originalPositions[i].left + dx}px`;
-      tracked.elements[i].style.top = `${originalPositions[i].top + dy}px`;
+      tracked.elements[i].style.left = `${originalPositions[i].left + delta.dx * pixelScale}px`;
+      tracked.elements[i].style.top = `${originalPositions[i].top - delta.dy * pixelScale}px`;
     }
   };
 
@@ -1754,7 +1764,7 @@ function startDrag(e: MouseEvent, tracked: TrackedAnnotation): void {
 
     const dx = ev.clientX - startX;
     const dy = ev.clientY - startY;
-    const pdfDelta = screenToPdfDelta(dx, dy);
+    const pdfDelta = screenToPdfDelta(dx, dy, viewport);
 
     // Apply move to def
     applyMoveToDef(
@@ -1932,7 +1942,7 @@ function setupRotateHandle(
     const onMouseMove = (ev: MouseEvent) => {
       const angle = Math.atan2(ev.clientY - centerY, ev.clientX - centerX);
       // Convert to degrees, offset so 0 = pointing up
-      let degrees = (angle * 180) / Math.PI + 90;
+      let degrees = (angle * 180) / Math.PI + 90 - (renderedViewport?.rotation ?? 0);
       // Normalize
       if (degrees < 0) degrees += 360;
       if (degrees > 360) degrees -= 360;
@@ -1971,7 +1981,7 @@ function setupRotateHandle(
 function paintAnnotationsOnCanvas(
   ctx: CanvasRenderingContext2D,
   pageNum: number,
-  viewport: { width: number; height: number; scale: number },
+  viewport: PdfViewport,
 ): void {
   for (const tracked of annotationMap.values()) {
     const def = tracked.def;
@@ -2060,7 +2070,7 @@ function paintAnnotationsOnCanvas(
         const pos = pdfPointToScreen(def.x, def.y, viewport);
         ctx.save();
         ctx.fillStyle = color;
-        ctx.font = `${(def.fontSize || 12) * viewport.scale}px Helvetica, Arial, sans-serif`;
+        ctx.font = `${(def.fontSize || 12) * (viewport.scale * viewport.userUnit)}px Helvetica, Arial, sans-serif`;
         ctx.fillText(def.content, pos.left, pos.top);
         ctx.restore();
         break;
@@ -2075,14 +2085,14 @@ function paintAnnotationsOnCanvas(
         ctx.fillStyle = color;
         ctx.lineWidth = 3;
         ctx.globalAlpha = 0.6;
-        ctx.font = `bold ${24 * viewport.scale}px Helvetica, Arial, sans-serif`;
+        ctx.font = `bold ${24 * (viewport.scale * viewport.userUnit)}px Helvetica, Arial, sans-serif`;
         const metrics = ctx.measureText(def.label);
-        const pad = 8 * viewport.scale;
+        const pad = 8 * (viewport.scale * viewport.userUnit);
         ctx.strokeRect(
           -pad,
-          -24 * viewport.scale - pad,
+          -24 * (viewport.scale * viewport.userUnit) - pad,
           metrics.width + pad * 2,
-          24 * viewport.scale + pad * 2,
+          24 * (viewport.scale * viewport.userUnit) + pad * 2,
         );
         ctx.fillText(def.label, 0, 0);
         ctx.restore();
@@ -2212,15 +2222,8 @@ function renderAnnotationsForPage(pageNum: number): void {
     tracked.elements = [];
   }
 
-  if (!pdfDocument) return;
-
-  // Get viewport for coordinate conversion
-  const vp = {
-    width: parseFloat(annotationLayerEl.style.width) || 0,
-    height: parseFloat(annotationLayerEl.style.height) || 0,
-    scale,
-  };
-  if (vp.width === 0 || vp.height === 0) return;
+  if (!pdfDocument || !renderedViewport || renderedText?.page !== pageNum || renderedText.generation !== loadGeneration) return;
+  const vp = renderedViewport.clone({ rotation: 0 });
 
   for (const tracked of annotationMap.values()) {
     const def = tracked.def;
@@ -2250,7 +2253,7 @@ function renderAnnotationsForPage(pageNum: number): void {
 
 function renderAnnotation(
   def: PdfAnnotationDef,
-  viewport: { width: number; height: number; scale: number },
+  viewport: PdfViewport,
 ): HTMLElement[] {
   switch (def.type) {
     case "highlight": {
@@ -2304,7 +2307,7 @@ function renderAnnotation(
 function renderRectsAnnotation(
   rects: Rect[],
   className: string,
-  viewport: { width: number; height: number; scale: number },
+  viewport: PdfViewport,
   extraStyles: Record<string, string>,
   strikeColor?: string,
 ): HTMLElement[] {
@@ -2338,7 +2341,7 @@ function renderRectsAnnotation(
 
 function renderNoteAnnotation(
   def: NoteAnnotation,
-  viewport: { width: number; height: number; scale: number },
+  viewport: PdfViewport,
 ): HTMLElement {
   const pos = pdfPointToScreen(def.x, def.y, viewport);
   const el = document.createElement("div");
@@ -2357,7 +2360,7 @@ function renderNoteAnnotation(
 
 function renderRectangleAnnotation(
   def: RectangleAnnotation,
-  viewport: { width: number; height: number; scale: number },
+  viewport: PdfViewport,
 ): HTMLElement {
   const screen = pdfRectToScreen(
     { x: def.x, y: def.y, width: def.width, height: def.height },
@@ -2380,14 +2383,14 @@ function renderRectangleAnnotation(
 
 function renderFreetextAnnotation(
   def: FreetextAnnotation,
-  viewport: { width: number; height: number; scale: number },
+  viewport: PdfViewport,
 ): HTMLElement {
   const pos = pdfPointToScreen(def.x, def.y, viewport);
   const el = document.createElement("div");
   el.className = "annotation-freetext";
   el.style.left = `${pos.left}px`;
   el.style.top = `${pos.top}px`;
-  el.style.fontSize = `${(def.fontSize || 12) * viewport.scale}px`;
+  el.style.fontSize = `${(def.fontSize || 12) * (viewport.scale * viewport.userUnit)}px`;
   if (def.color) el.style.color = def.color;
   el.textContent = def.content;
   return el;
@@ -2395,14 +2398,14 @@ function renderFreetextAnnotation(
 
 function renderStampAnnotation(
   def: StampAnnotation,
-  viewport: { width: number; height: number; scale: number },
+  viewport: PdfViewport,
 ): HTMLElement {
   const pos = pdfPointToScreen(def.x, def.y, viewport);
   const el = document.createElement("div");
   el.className = "annotation-stamp";
   el.style.left = `${pos.left}px`;
   el.style.top = `${pos.top}px`;
-  el.style.fontSize = `${24 * viewport.scale}px`;
+  el.style.fontSize = `${24 * (viewport.scale * viewport.userUnit)}px`;
   if (def.color) el.style.color = def.color;
   if (def.rotation) {
     el.style.transform = `rotate(${def.rotation}deg)`;
@@ -2414,7 +2417,7 @@ function renderStampAnnotation(
 
 function renderCircleAnnotation(
   def: CircleAnnotation,
-  viewport: { width: number; height: number; scale: number },
+  viewport: PdfViewport,
 ): HTMLElement {
   const screen = pdfRectToScreen(
     { x: def.x, y: def.y, width: def.width, height: def.height },
@@ -2433,7 +2436,7 @@ function renderCircleAnnotation(
 
 function renderLineAnnotation(
   def: LineAnnotation,
-  viewport: { width: number; height: number; scale: number },
+  viewport: PdfViewport,
 ): HTMLElement {
   const p1 = pdfPointToScreen(def.x1, def.y1, viewport);
   const p2 = pdfPointToScreen(def.x2, def.y2, viewport);
@@ -2455,7 +2458,7 @@ function renderLineAnnotation(
 
 function renderImageAnnotation(
   def: ImageAnnotation,
-  viewport: { width: number; height: number; scale: number },
+  viewport: PdfViewport,
 ): HTMLElement {
   const screen = pdfRectToScreen(
     { x: def.x, y: def.y, width: def.width, height: def.height },
@@ -2495,7 +2498,7 @@ const annotationCanvasMap = new Map<string, HTMLCanvasElement>();
 
 function renderImportedAnnotation(
   def: ImportedAnnotation,
-  viewport: { width: number; height: number; scale: number },
+  viewport: PdfViewport,
 ): HTMLElement {
   const screen = pdfRectToScreen(
     { x: def.x, y: def.y, width: def.width, height: def.height },
@@ -2674,20 +2677,8 @@ function findTextRects(query: string, pageNum: number): Rect[] {
 
         for (let ri = 0; ri < clientRects.length; ri++) {
           const r = clientRects[ri];
-          // Convert screen coords back to PDF coords
-          const screenLeft = r.left - wrapperRect.left;
-          const screenTop = r.top - wrapperRect.top;
-          const pdfX = screenLeft / scale;
-          const pdfHeight = r.height / scale;
-          const pdfWidth = r.width / scale;
-          const pageHeight = parseFloat(annotationLayerEl.style.height) / scale;
-          const pdfY = pageHeight - (screenTop + r.height) / scale;
-          rects.push({
-            x: pdfX,
-            y: pdfY,
-            width: pdfWidth,
-            height: pdfHeight,
-          });
+          if (renderedViewport) rects.push(screenRectToPdf({ x: r.left - wrapperRect.left, y: r.top - wrapperRect.top,
+            width: r.width, height: r.height }, renderedViewport));
         }
       } catch {
         // Range API errors with stale nodes
@@ -2767,11 +2758,12 @@ async function renderPageOffscreen(pageNum: number): Promise<string> {
   }).promise;
 
   // Paint annotations on top so the model can see them
-  paintAnnotationsOnCanvas(ctx, pageNum, {
-    width: viewport.width,
-    height: viewport.height,
-    scale: renderScale,
-  });
+  const annotationViewport = viewport.clone({ rotation: 0 });
+  const annotationMatrix = annotationViewMatrix(annotationViewport, viewport);
+  ctx.save();
+  ctx.transform(annotationMatrix.a, annotationMatrix.b, annotationMatrix.c, annotationMatrix.d, annotationMatrix.e, annotationMatrix.f);
+  paintAnnotationsOnCanvas(ctx, pageNum, annotationViewport);
+  ctx.restore();
 
   // Extract base64 JPEG (much smaller than PNG, well within body limits)
   const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
@@ -3579,7 +3571,7 @@ async function renderPage() {
     textLayerEl.style.width = `${viewport.width}px`;
     textLayerEl.style.height = `${viewport.height}px`;
     // Set --scale-factor so CSS font-size/transform rules work correctly.
-    textLayerEl.style.setProperty("--scale-factor", `${scale}`);
+    textLayerEl.style.setProperty("--total-scale-factor", `${scale * page.userUnit}`);
 
     // Render canvas - track the task so we can cancel it.
     //
@@ -3635,9 +3627,16 @@ async function renderPage() {
       container: textLayerEl,
       viewport,
     });
+    // TextLayer positions its spans in the unrotated page, then its root is
+    // rotated by PDF.js CSS. Its stock dimensions depend on viewer-only CSS
+    // variables; give this embedded layer the actual unrotated pixel size.
+    const textViewport = viewport.clone({ rotation: 0 });
+    textLayerEl.style.width = textViewport.width + "px";
+    textLayerEl.style.height = textViewport.height + "px";
     await textLayer.render();
     if (renderGeneration !== loadGeneration || pageToRender !== currentPage) return;
     renderedText = { generation: renderGeneration, page: pageToRender };
+    renderedViewport = viewport;
     ocrPanel.rendered({ key: renderGeneration + ":" + pageToRender + ":" + viewport.rotation,
       width: viewport.width, height: viewport.height, hasText: textContent.items.some(item => "str" in item && item.str.trim()) });
     if (pageLanding !== null) {
@@ -3657,8 +3656,11 @@ async function renderPage() {
     // Size overlay layers to match canvas
     highlightLayerEl.style.width = `${viewport.width}px`;
     highlightLayerEl.style.height = `${viewport.height}px`;
-    annotationLayerEl.style.width = `${viewport.width}px`;
-    annotationLayerEl.style.height = `${viewport.height}px`;
+    const annotationViewport = viewport.clone({ rotation: 0 });
+    annotationLayerEl.style.width = annotationViewport.width + "px";
+    annotationLayerEl.style.height = annotationViewport.height + "px";
+    annotationLayerEl.style.transformOrigin = "0 0";
+    annotationLayerEl.style.transform = annotationViewMatrix(annotationViewport, viewport).toString();
 
     // Render PDF.js AnnotationLayer for interactive form widgets
     formLayerEl.innerHTML = "";
@@ -4784,6 +4786,7 @@ async function reloadPdf(): Promise<void> {
   currentRenderTask = null;
   const oldDoc = pdfDocument;
   pdfDocument = null;
+  renderedViewport = null;
   await oldDoc?.destroy().catch(() => {});
 
   // Clear per-document edit/display state
@@ -5036,6 +5039,7 @@ async function handleReaderResult(result: CallToolResult) {
   await renderFinished;
   const oldDocument = pdfDocument;
   pdfDocument = null;
+  renderedViewport = null;
   await oldDocument?.destroy();
   rangeCache.clear(); inflightRequests.clear();
   for (const [, tracked] of annotationMap) for (const element of tracked.elements) element.remove();
@@ -5231,11 +5235,11 @@ app.onerror = (err: unknown) => {
 // variant there forces a matching `case` below.
 import type { PdfCommand } from "./commands.js";
 
-/** Get page height in PDF points (for coordinate conversion). */
-async function getPageHeight(pageNum: number): Promise<number> {
-  if (!pdfDocument) return 792; // US Letter fallback
+/** Model geometry uses the actual rotated and cropped page at PDF-point scale. */
+async function getModelViewport(pageNum: number): Promise<PdfViewport> {
+  if (!pdfDocument) throw new Error("No PDF loaded");
   const page = await pdfDocument.getPage(pageNum);
-  return page.getViewport({ scale: 1.0 }).height;
+  return page.getViewport({ scale: 1.0 });
 }
 
 /**
@@ -5317,8 +5321,8 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
         // server's interact() waits the full 45s for a reply that never comes.
         for (const def of cmd.annotations) {
           try {
-            const pageHeight = await getPageHeight(def.page);
-            addAnnotation(convertFromModelCoords(def, pageHeight));
+            const viewport = await getModelViewport(def.page);
+            addAnnotation(convertFromModelCoords(def, viewport));
           } catch (err) {
             log.error(`add_annotations: failed for id=${def.id}:`, err);
           }
@@ -5344,21 +5348,20 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
             //
             // Fix: round-trip through model space. Convert existing to model
             // coords, spread the patch on top (all-model now), convert back.
-            // convertToModelCoords is self-inverse (pdf-annotations.ts:192) so
-            // unchanged fields pass through unmolested.
-            const srcPageH = await getPageHeight(existing.def.page);
-            const existingModel = convertToModelCoords(existing.def, srcPageH);
+            // Forward and inverse viewport transforms preserve unchanged fields.
+            const srcViewport = await getModelViewport(existing.def.page);
+            const existingModel = convertToModelCoords(existing.def, srcViewport);
             const mergedModel = {
               ...existingModel,
               ...update,
             } as PdfAnnotationDef;
-            const dstPageH =
+            const dstViewport =
               update.page != null && update.page !== existing.def.page
-                ? await getPageHeight(update.page)
-                : srcPageH;
+                ? await getModelViewport(update.page)
+                : srcViewport;
             const mergedInternal = convertFromModelCoords(
               mergedModel,
-              dstPageH,
+              dstViewport,
             );
             // Pass the FULL merged def. updateAnnotation() already merges over
             // the tracked def, so passing everything is correct and avoids the
@@ -6164,6 +6167,8 @@ function addImageFromFile(
   screenX?: number,
   screenY?: number,
 ): void {
+  const documentAtDrop = pdfDocument, pageAtDrop = currentPage, viewport = renderedViewport;
+  if (!documentAtDrop || !viewport || renderedText?.page !== pageAtDrop) return;
   const reader = new FileReader();
   reader.onload = () => {
     const dataUrl = reader.result as string;
@@ -6173,24 +6178,16 @@ function addImageFromFile(
 
     const img = new Image();
     img.onload = () => {
+      if (pdfDocument !== documentAtDrop || currentPage !== pageAtDrop) return;
       const maxWidth = 200; // PDF points
       const aspectRatio = img.naturalHeight / img.naturalWidth;
       const width = Math.min(img.naturalWidth, maxWidth);
       const height = width * aspectRatio;
 
-      // Convert screen position to PDF internal coords, or default to page center
-      let pdfX: number;
-      let pdfInternalY: number;
-      if (screenX != null && screenY != null) {
-        pdfX = screenX / scale;
-        pdfInternalY = (containerHtmlEl.clientHeight - screenY) / scale;
-      } else {
-        // Center on the visible page area
-        const pageW = containerHtmlEl.clientWidth / scale;
-        const pageH = containerHtmlEl.clientHeight / scale;
-        pdfX = pageW / 2 - width / 2;
-        pdfInternalY = pageH / 2 + height / 2;
-      }
+      // Center the image at the drop point in page coordinates, preserving
+      // its own aspect ratio even when the page has been rotated or cropped.
+      const [centerX, centerY] = viewport.convertToPdfPoint(screenX ?? viewport.width / 2, screenY ?? viewport.height / 2);
+      const pdfX = centerX - width / 2, pdfInternalY = centerY - height / 2;
 
       const id = `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const def: ImageAnnotation = {
@@ -6257,9 +6254,9 @@ containerHtmlEl.addEventListener("drop", async (e: DragEvent) => {
     librarySaveStatus.textContent = "导入队列已处理，请到书库查看每个文件的结果。";
     return;
   }
-  const containerRect = containerHtmlEl.getBoundingClientRect();
-  const dropX = e.clientX - containerRect.left;
-  const dropY = e.clientY - containerRect.top;
+  const pageRect = pageWrapperEl.getBoundingClientRect();
+  const dropX = e.clientX - pageRect.left;
+  const dropY = e.clientY - pageRect.top;
 
   for (const file of e.dataTransfer.files) {
     if (!file.type.startsWith("image/")) continue;

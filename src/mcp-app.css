@@ -337,6 +337,7 @@ body {
   transform-origin: 0 0;
   z-index: 2;
   /* PDF.js TextLayer sets --min-font-size on container */
+  --text-scale-factor: calc(var(--total-scale-factor, 1) * var(--min-font-size, 1));
   --min-font-size-inv: calc(1 / var(--min-font-size, 1));
 }
 
@@ -354,7 +355,7 @@ body {
 .text-layer .markedContent span:not(.markedContent) {
   z-index: 1;
   --font-height: 0;
-  font-size: calc(var(--scale-factor, 1) * var(--font-height));
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
   --scale-x: 1;
   --rotate: 0deg;
   transform: rotate(var(--rotate)) scaleX(var(--scale-x))
