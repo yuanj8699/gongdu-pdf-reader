@@ -85,10 +85,12 @@ import { createTextReader } from "./text-reader.js";
 import { HostBridge } from "./host-bridge.js";
 import { createReaderWorkspace } from "./reader-workspace.js";
 import { createReaderSettings } from "./reader-settings.js";
+import { createReaderWidgets } from "./reader-widgets.js";
+import { createOcrPanel } from "./ocr-panel.js";
 import { createStudyPanel, type StudyContext } from "./study-panel.js";
 import { createReadingContext, withNearbyText, findSelectionInText, assertReferenceTarget, type ReadingContext, type SelectionRect } from "./reading-context.js";
 
-import { withSelectionRange } from "./selection-context.js";
+import { withSelectionRange, textFromRange } from "./selection-context.js";
 
 const MAX_MODEL_CONTEXT_LENGTH = 15000;
 // Configure PDF.js worker
@@ -266,9 +268,12 @@ let pageLabels: string[] | null = null;
 let renderedRotation = 0;
 type ReadingSelection = { text: string; page: number; document: pdfjsLib.PDFDocumentProxy; context: ReadingContext };
 function captureReadingContext(text?: string, rects?: SelectionRect[]): ReadingContext {
-  return createReadingContext({ asset: currentLibraryAsset, viewUUID, title: pdfTitle || "PDF", uri: pdfUrl,
+  const context = createReadingContext({ asset: currentLibraryAsset, viewUUID, title: pdfTitle || "PDF", uri: pdfUrl,
     fingerprint: pdfDocument?.fingerprints[0] ?? undefined, pageNumber: currentPage, pageLabel: pageLabels?.[currentPage - 1],
     rotation: renderedRotation, text, rects });
+  const result = ocrPanel.result();
+  if (result) context.textSource = { kind: "ocr", engine: "windows-media-ocr", language: result.language, resultId: result.resultId, verified: false };
+  return context;
 }
 let selectionSnapshot: ReadingSelection | null = null;
 let pressedSelection: ReadingSelection | null = null;
@@ -280,18 +285,29 @@ function readSelection(): ReadingSelection | null {
   if (!pdfDocument || !selection?.rangeCount || selection.isCollapsed) return null;
   if (renderedText?.generation !== loadGeneration || renderedText.page !== currentPage) return null;
   const range = selection.getRangeAt(0);
-  if (!textLayerEl.contains(range.startContainer) || !textLayerEl.contains(range.endContainer)) return null;
-  const text = selection.toString().replace(/\s+/g, " ").trim();
+  const layer = ocrPanel.result() ? ocrPanel.layer : textLayerEl;
+  if (!layer.contains(range.startContainer) || !layer.contains(range.endContainer)) return null;
+  const text = (ocrPanel.result() ? textFromRange(range) : selection.toString()).replace(/\s+/g, " ").trim();
   const origin = pageWrapperEl.getBoundingClientRect();
   const round = (n: number) => Math.round(n * 100) / 100;
   const rects = Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0).map(r => ({
     x: round((r.left - origin.left) / scale), y: round((r.top - origin.top) / scale),
     width: round(r.width / scale), height: round(r.height / scale),
   }));
-  return text ? { text, page: currentPage, document: pdfDocument, context: withSelectionRange(captureReadingContext(text, rects), textLayerEl, range) } : null;
+  if (!text) return null;
+  let context = captureReadingContext(text, rects);
+  if (context.textSource?.kind === "ocr") {
+    const row = (range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement)?.closest<HTMLElement>(".ocr-line");
+    // OCR cannot prove reading order across columns or table cells. Only add
+    // neighboring words from the same recognized line, never the whole page.
+    context = row?.contains(range.endContainer) ? withSelectionRange(context, row, range)
+      : { ...context, selection: { ...context.selection!, nearbyTextStatus: "unavailable" } };
+  } else context = withSelectionRange(context, layer, range);
+  return { text, page: currentPage, document: pdfDocument, context };
 }
 function refreshSelection() {
   selectionSnapshot = readSelection();
+  document.querySelector(".selection-bar")!.classList.toggle("has-selection", Boolean(selectionSnapshot) || explanationSending);
   explainSelectionBtn.disabled = !selectionSnapshot || explanationSending;
   if (!explanationSending) selectionStatusEl.textContent = selectionSnapshot
     ? `第 ${selectionSnapshot.page} 页 · 已选 ${selectionSnapshot.text.length} 字：${selectionSnapshot.text.slice(0, 60)}`
@@ -325,6 +341,12 @@ explainSelectionBtn.addEventListener("click", async () => {
   } finally {
     explanationSending = false;
     explainSelectionBtn.disabled = !readSelection();
+  }
+});
+document.addEventListener("copy", event => {
+  const selected = readSelection();
+  if (selected?.context.textSource?.kind === "ocr" && event.clipboardData) {
+    event.clipboardData.setData("text/plain", selected.text); event.preventDefault();
   }
 });
 // formLayerEl → imported from ./viewer-state.js
@@ -513,7 +535,8 @@ function requestFitToContent() {
   // All visible control rows + document padding + page + rounding buffer.
   // Note: search bar is absolutely positioned over the document area, so excluded
   const toolbarHeight = toolbarEl.offsetHeight;
-  const extraControlsHeight = Array.from(mainEl.querySelectorAll<HTMLElement>(".zoom-bar, .selection-bar, .library-bar, .study-panel"))
+  const extraControlsHeight = Array.from(mainEl.querySelectorAll<HTMLElement>(".zoom-bar, .selection-bar, .library-bar, .study-panel, .ocr-panel, .reader-widgets"))
+    .filter(row => getComputedStyle(row).position !== "absolute")
     .reduce((height, row) => height + row.offsetHeight, 0);
   const pageWrapperHeight = pageWrapperEl.offsetHeight;
   const BUFFER = 10; // Buffer for sub-pixel rounding and browser quirks
@@ -820,6 +843,15 @@ let githubEnabled = false;
 const libraryBar = document.getElementById("library-bar")!;
 const readerWorkspace = createReaderWorkspace();
 const readerSettings = createReaderSettings(libraryBar);
+const readerWidgets = createReaderWidgets(document.getElementById("reader-stage")!);
+const focusReading = document.createElement("button"); focusReading.id = "focus-reading"; focusReading.className = "reader-action"; focusReading.type = "button";
+document.querySelector(".toolbar-right")!.prepend(focusReading);
+function setFocusReading(value: boolean) {
+  document.documentElement.classList.toggle("focus-reading", value);
+  focusReading.textContent = value ? "退出专注" : "专注阅读"; focusReading.setAttribute("aria-pressed", String(value));
+}
+setFocusReading(false);
+focusReading.addEventListener("click", () => { setFocusReading(!document.documentElement.classList.contains("focus-reading")); void refitReader(); });
 const libraryHome = document.getElementById("library-home") as HTMLButtonElement;
 const libraryAddCurrent = document.getElementById("library-add-current") as HTMLButtonElement;
 const librarySaveStatus = document.getElementById("library-save-status")!;
@@ -856,7 +888,33 @@ async function openLibraryAsset(assetId: string) {
   } finally { openingAsset = false; }
 }
 const libraryPanel = createLibraryPanel(document.getElementById("library-panel")!, callLibrary, openLibraryAsset);
-const textReader = createTextReader(document.getElementById("text-reader")!, callLibrary, host);
+const textReader = createTextReader(document.getElementById("text-reader")!, callLibrary, host,
+  (asset, line) => readerWidgets.setProgress({ current: line, total: asset.pageCount, unit: "行", title: asset.title }));
+const ocrContainer = document.createElement("div");
+document.querySelector(".selection-bar")!.after(ocrContainer);
+const ocrLayer = document.createElement("div"); ocrLayer.className = "ocr-text-layer"; ocrLayer.hidden = true;
+ocrLayer.setAttribute("aria-label", "OCR 识别文字，未经核对");
+pageWrapperEl.append(ocrLayer);
+const ocrPanel = createOcrPanel(ocrContainer, ocrLayer, textLayerEl, callLibrary, async (rotation, signal) => {
+  const document = pdfDocument, pageNumber = currentPage, generation = loadGeneration;
+  if (!document || renderedText?.generation !== generation || renderedText.page !== pageNumber) throw new Error("请等页面加载完成再识别。");
+  const page = await document.getPage(pageNumber);
+  signal.throwIfAborted();
+  const base = page.getViewport({ scale: 1 });
+  const viewport = page.getViewport({ scale: Math.min(3.5, 2600 / Math.max(base.width, base.height)), rotation: (base.rotation + rotation) % 360 });
+  const canvas = window.document.createElement("canvas"); canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
+  const task = page.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport, annotationMode: AnnotationMode.DISABLE });
+  const cancelRender = () => task.cancel();
+  signal.addEventListener("abort", cancelRender, { once: true });
+  try {
+    await task.promise;
+    signal.throwIfAborted();
+    if (pdfDocument !== document || currentPage !== pageNumber || loadGeneration !== generation) throw new Error("页面已切换，请在新页重新识别。");
+    const bytes = canvas.toDataURL("image/png").split(",")[1];
+    if (bytes.length > Math.ceil(8 * 1024 * 1024 / 3) * 4) throw new Error("本页图像过大，暂不能识别。");
+    return bytes;
+  } finally { signal.removeEventListener("abort", cancelRender); canvas.width = canvas.height = 0; }
+}, () => { clearReadingSelection(); studyPanel.refresh(); void updatePageContext(); });
 const studyContainer = document.createElement("section");
 studyContainer.setAttribute("aria-label", "共读实践与笔记");
 libraryBar.after(studyContainer);
@@ -930,6 +988,7 @@ function saveLibraryPage(asset: LibraryAsset, page: number) {
 
 // UI State functions
 function showLoading(text: string) {
+  readerWidgets.setProgress(null);
   readerLoadError = null;
   loadingTextEl.textContent = text;
   loadingEl.style.display = "flex";
@@ -938,6 +997,8 @@ function showLoading(text: string) {
 }
 
 function showError(message: string) {
+  readerWidgets.setProgress(null);
+  ocrPanel.invalidate();
   readerLoadError = message;
   errorMessageEl.textContent = message;
   loadingEl.style.display = "none";
@@ -1099,6 +1160,7 @@ function showDebugBubble(debug: unknown): void {
 }
 
 function updateControls() {
+  readerWidgets.setProgress(pdfDocument ? { current: currentPage, total: totalPages, unit: "页", title: pdfTitle } : null);
   // Show URL with CSS ellipsis, full URL as tooltip, clickable to open
   updateTitleDisplay();
   const hasSourceLink = /^https:\/\//i.test(pdfUrl);
@@ -1235,9 +1297,15 @@ async function updatePageContext() {
   const capturedContext = snapshot?.context ?? captureReadingContext();
 
   try {
+    if (capturedContext.textSource?.kind === "ocr") {
+      await host.updateContext({ content: [{ type: "text", text: "当前 PDF 页已在本机 OCR 识别。识别内容尚未随自动上下文发送；用户可划选后解释、提问或记笔记，也可显式调用读取工具。" }],
+        structuredContent: { readingContext: { ...capturedContext, selection: null } } },
+        () => revision === contextRevision && document === pdfDocument && pageNumber === currentPage);
+      return;
+    }
     const page = await document.getPage(pageNumber);
     const textContent = await page.getTextContent();
-    const pageText = (textContent.items as Array<{ str?: string }>)
+    const pageText = ocrPanel.result()?.text ?? (textContent.items as Array<{ str?: string }>)
       .map((item) => item.str || "")
       .join(" ")
       .replace(/\s+/g, " ")
@@ -1345,7 +1413,7 @@ async function updatePageContext() {
     const contentBlocks: ContentBlock[] = [{ type: "text", text: contextText }];
 
     // Add screenshot if host supports image content
-    if (host.getHostCapabilities()?.updateModelContext?.image) {
+    if (!snapshot && !capturedContext.textSource && host.getHostCapabilities()?.updateModelContext?.image) {
       try {
         // Render offscreen with ENABLE_STORAGE so filled form fields are visible
         const base64Data = await renderPageOffscreen(currentPage);
@@ -2726,7 +2794,7 @@ async function handleGetViewerState(requestId: string): Promise<void> {
   if (capturedDocument && readingContext) {
     const page = await capturedDocument.getPage(capturedPage);
     const text = await page.getTextContent();
-    readingContext = withNearbyText({ ...readingContext, location: { ...readingContext.location, rotation: page.rotate } }, text.items.map(item => "str" in item ? item.str : "").join(" "));
+    if (!readingContext.textSource) readingContext = withNearbyText({ ...readingContext, location: { ...readingContext.location, rotation: page.rotate } }, text.items.map(item => "str" in item ? item.str : "").join(" "));
     if (capturedDocument !== pdfDocument || capturedPage !== currentPage) throw new Error("阅读位置已变化，请重新读取上下文。");
   }
   const rects = readingContext?.location.rects ?? [];
@@ -2786,7 +2854,8 @@ async function collectPageData(
 
     if (getText) {
       // Use cached text if available, otherwise extract on the fly
-      let text = pageTextCache.get(pageNum);
+      const recognized = ocrPanel.cachedPage(loadGeneration, pageNum);
+      let text = recognized ? "[本机 OCR，未经人工核对；语言：" + recognized.language + "]\n" + recognized.text : pageTextCache.get(pageNum);
       if (text == null && pdfDocument) {
         try {
           const pg = await pdfDocument.getPage(pageNum);
@@ -3456,6 +3525,7 @@ let finishRender: (() => void) | undefined;
 async function renderPage() {
   if (!pdfDocument) return;
   renderedText = null;
+  ocrPanel.invalidate();
   clearReadingSelection();
 
   // If already rendering, queue this page for later
@@ -3568,6 +3638,12 @@ async function renderPage() {
     await textLayer.render();
     if (renderGeneration !== loadGeneration || pageToRender !== currentPage) return;
     renderedText = { generation: renderGeneration, page: pageToRender };
+    ocrPanel.rendered({ key: renderGeneration + ":" + pageToRender + ":" + viewport.rotation,
+      width: viewport.width, height: viewport.height, hasText: textContent.items.some(item => "str" in item && item.str.trim()) });
+    if (pageLanding !== null) {
+      canvasContainerEl.scrollTop = pageLanding === "bottom" ? canvasContainerEl.scrollHeight : 0;
+      canvasContainerEl.scrollLeft = 0; pageLanding = null;
+    }
 
     // Cache page text items if not already cached
     if (!pageTextItemsCache.has(pageToRender)) {
@@ -3768,13 +3844,16 @@ function loadSavedPage(): number | null {
 }
 
 // Navigation
-function goToPage(page: number) {
+let pageLanding: "top" | "bottom" | null = null;
+function goToPage(page: number, landing: "top" | "bottom" = "top") {
+  if (!pdfDocument || !Number.isInteger(page)) return;
   const targetPage = Math.max(1, Math.min(page, totalPages));
   if (targetPage !== currentPage) {
     clearReadingSelection();
     selectAnnotation(null);
     preloadPaused = true;
     currentPage = targetPage;
+    pageLanding = landing;
     saveCurrentPage();
     renderPage();
   }
@@ -3787,6 +3866,13 @@ function prevPage() {
 
 function nextPage() {
   goToPage(currentPage + 1);
+}
+function scrollReadingPage(direction: -1 | 1) {
+  if (!pdfDocument || isRendering || renderedText?.generation !== loadGeneration || renderedText.page !== currentPage) return;
+  const room = canvasContainerEl.scrollHeight - canvasContainerEl.clientHeight;
+  if (direction > 0 && canvasContainerEl.scrollTop < room - 2 || direction < 0 && canvasContainerEl.scrollTop > 2) {
+    canvasContainerEl.scrollBy({ top: direction * canvasContainerEl.clientHeight * .85, behavior: "instant" });
+  } else goToPage(currentPage + direction, direction < 0 ? "bottom" : "top");
 }
 
 function scrollSelectionIntoView(): void {
@@ -4090,7 +4176,7 @@ canvasContainerEl.addEventListener("mousedown", (e) => {
 
 // Keyboard navigation
 document.addEventListener("keydown", (e) => {
-  if (e.defaultPrevented) return;
+  if (e.defaultPrevented || !pdfDocument) return;
   // Delete/Backspace to delete selected annotations
   if (
     (e.key === "Delete" || e.key === "Backspace") &&
@@ -4235,16 +4321,20 @@ document.addEventListener("keydown", (e) => {
       }
       break;
     case "ArrowLeft":
-    case "PageUp":
       prevPage();
       e.preventDefault();
       break;
     case "ArrowRight":
-    case "PageDown":
-    case " ":
       nextPage();
       e.preventDefault();
       break;
+    case "PageUp":
+      scrollReadingPage(-1); e.preventDefault(); break;
+    case "PageDown":
+      scrollReadingPage(1); e.preventDefault(); break;
+    case " ":
+      if (document.activeElement?.closest("button, summary, a, [contenteditable]")) return;
+      scrollReadingPage(e.shiftKey ? -1 : 1); e.preventDefault(); break;
     case "+":
     case "=":
       zoomIn();
@@ -4386,6 +4476,7 @@ function commitPinch() {
 
 // Horizontal scroll/swipe to change pages (disabled when zoomed)
 let horizontalScrollAccumulator = 0;
+let horizontalGestureTime = 0, horizontalGestureTurned = false;
 const SCROLL_THRESHOLD = 50;
 
 canvasContainerEl.addEventListener(
@@ -4438,13 +4529,16 @@ canvasContainerEl.addEventListener(
 
     // No horizontal overflow → swipe changes pages.
     e.preventDefault();
-    horizontalScrollAccumulator += e.deltaX;
-    if (horizontalScrollAccumulator > SCROLL_THRESHOLD) {
-      nextPage();
-      horizontalScrollAccumulator = 0;
-    } else if (horizontalScrollAccumulator < -SCROLL_THRESHOLD) {
-      prevPage();
-      horizontalScrollAccumulator = 0;
+    const now = performance.now();
+    if (now - horizontalGestureTime > 220) { horizontalScrollAccumulator = 0; horizontalGestureTurned = false; }
+    horizontalGestureTime = now;
+    if (horizontalGestureTurned) return;
+    const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
+      : e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? canvasContainerEl.clientWidth : 1;
+    horizontalScrollAccumulator += e.deltaX * unit;
+    if (Math.abs(horizontalScrollAccumulator) > SCROLL_THRESHOLD) {
+      horizontalGestureTurned = true;
+      if (horizontalScrollAccumulator > 0) nextPage(); else prevPage();
     }
   },
   { passive: false },
@@ -4670,6 +4764,7 @@ async function fetchRange(
  * Preserves currentPage (clamped). Does not stop/restart the poll loop.
  */
 async function reloadPdf(): Promise<void> {
+  ocrPanel.invalidate(true);
   clearReadingSelection();
   readerNavigation.clear();
   log.info("Reloading PDF from disk");
@@ -4935,6 +5030,7 @@ async function handleReaderResult(result: CallToolResult) {
   stopPolling();
   await commandWork.catch(() => {}); // The poll loop already reports command failures.
   loadGeneration++;
+  ocrPanel.invalidate(true); readerWidgets.setProgress(null); pageLanding = "top";
   if (pdfDocument) persistAnnotations();
   currentRenderTask?.cancel();
   await renderFinished;
@@ -5528,6 +5624,8 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
 
 app.onteardown = async () => {
   log.info("App is being torn down");
+  try { await ocrPanel.dispose(); } catch (error) { log.error("OCR cancellation on close was not confirmed", error); }
+  readerWidgets.setProgress(null);
   await readingSaveWork;
   stopPolling();
   // Bump loadGeneration so startPreloading's gen check fails and the
@@ -6152,6 +6250,13 @@ containerHtmlEl.addEventListener("drop", async (e: DragEvent) => {
   e.stopPropagation();
   if (!e.dataTransfer?.files.length) return;
 
+  const pdfs = [...e.dataTransfer.files].filter(file => /\.pdf$/i.test(file.name) || file.type === "application/pdf");
+  if (pdfs.length) {
+    librarySaveStatus.textContent = "正在将拖入的 PDF 加入书库…";
+    await libraryPanel.importFiles(pdfs);
+    librarySaveStatus.textContent = "导入队列已处理，请到书库查看每个文件的结果。";
+    return;
+  }
   const containerRect = containerHtmlEl.getBoundingClientRect();
   const dropX = e.clientX - containerRect.left;
   const dropY = e.clientY - containerRect.top;

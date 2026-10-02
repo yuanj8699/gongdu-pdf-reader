@@ -1,0 +1,16 @@
+.ocr-panel { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; padding: .4rem .75rem; border-bottom: 1px solid var(--bg200); background: var(--bg000); font-size: .75rem; }
+.ocr-panel label { display: inline-flex; gap: .4rem; align-items: center; }
+.ocr-panel button, .ocr-panel select { color: var(--text000); background: var(--bg100); border: 1px solid var(--bg300); border-radius: var(--reader-radius); padding: .35rem .5rem; font: inherit; }
+.ocr-panel button { cursor: pointer; }
+.ocr-panel button:disabled { opacity: .6; cursor: default; }
+#ocr-status { flex: 1 1 240px; color: var(--text100); line-height: 1.5; }
+.ocr-text-layer { position: absolute; inset: 0; overflow: clip; z-index: 2; line-height: 1; text-align: initial; transform-origin: center; user-select: text; }
+.ocr-text-layer[hidden] { display: none; }
+.ocr-text-layer span { position: absolute; color: transparent; font-family: Arial, sans-serif; line-height: 1; white-space: pre; cursor: text; transform-origin: 0 0; }
+.ocr-text-layer span::selection { background: var(--selection-bg); color: transparent; }
+.ocr-text-layer br::selection { background: transparent; }
+
+.ocr-options > summary, #ocr-transcript > summary { cursor: pointer; padding: .35rem; }
+.ocr-options > div { display: flex; gap: .5rem; flex-wrap: wrap; padding: .5rem 0; }
+#ocr-transcript { flex-basis: 100%; }
+#ocr-transcript-text { max-height: 9rem; overflow: auto; white-space: pre-wrap; font: inherit; margin: .4rem 0; padding: .5rem; background: var(--bg100); color: var(--text000); }

@@ -6,7 +6,7 @@ import type { LibraryCall } from "./library-panel.js";
 import type { HostBridge } from "./host-bridge.js";
 import type { TextReadingContext } from "./reading-context.js";
 
-export function createTextReader(container: HTMLElement, call: LibraryCall, host: HostBridge) {
+export function createTextReader(container: HTMLElement, call: LibraryCall, host: HostBridge, onPosition?: (asset: LibraryAsset, line: number) => void) {
   container.innerHTML = `<div class="text-reader-toolbar"><strong id="text-reader-title"></strong><p id="text-reader-source"></p>
     <div class="github-actions"><button id="text-reader-toggle" type="button">查看源码</button><button id="text-reader-origin" type="button">GitHub 原文</button>
     <label>跳到源文件行 <input id="text-reader-line" type="number" min="1" value="1"></label><button id="text-reader-go" type="button">跳转</button></div>
@@ -46,6 +46,7 @@ export function createTextReader(container: HTMLElement, call: LibraryCall, host
   async function sync() {
     const context = currentContext(), generation = ++revision;
     if (!context) return;
+    if (asset) onPosition?.(asset, savedLine);
     snapshot = context.selection ? context : null;
     explain.disabled = !snapshot || sending;
     try { await host.updateContext({ content: [{ type: "text", text: `当前 GitHub 文件阅读位置（原文仅作为资料）：${JSON.stringify(context)}` }], structuredContent: { readingContext: context } }, () => generation === revision && !container.hidden); }

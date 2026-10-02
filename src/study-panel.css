@@ -1,0 +1,14 @@
+.study-filters { display: flex; flex-wrap: wrap; gap: .5rem; margin-block: .75rem; align-items: center; }
+.study-filters label { display: flex; align-items: center; gap: .4rem; }
+.study-filters input { flex: 1 1 160px; min-width: 0; }
+.study-filters select, .study-filters input { font: inherit; color: var(--text000); background: var(--bg000); border: 1px solid var(--bg300); border-radius: var(--reader-radius); padding: .4rem; }
+.study-filters input::placeholder { color: var(--text100); }
+#study-entries button { margin-top: .3rem; }
+#study-entries blockquote[aria-label]::before { content: "OCR · 请对照原页核对"; display: block; color: var(--reader-accent); font-weight: 600; margin-bottom: .3rem; }
+
+.focus-reading .study-panel, .focus-reading .ocr-panel, .focus-reading .zoom-bar { display: none; }
+.focus-reading .selection-bar:not(.has-selection) { display: none; }
+
+/* A selection must not move the text being dragged. In focus mode the action
+   floats over the page instead of adding a new row to the reading layout. */
+.focus-reading .selection-bar { position: absolute; inset: auto .5rem .5rem; z-index: 10; border: 1px solid var(--bg300); border-radius: var(--reader-radius); box-shadow: 0 2px 8px var(--shadow-page-color); }
