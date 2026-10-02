@@ -150,7 +150,10 @@ export class OcrService {
   private capabilitiesRequest: Promise<OcrCapabilities> | null = null;
 
   capabilities(): Promise<OcrCapabilities> {
-    if (!this.capabilitiesRequest) this.capabilitiesRequest = this.inspectCapabilities();
+    if (!this.capabilitiesRequest) this.capabilitiesRequest = this.inspectCapabilities().then(result => {
+      if (!result.available) this.capabilitiesRequest = null;
+      return result;
+    });
     return this.capabilitiesRequest;
   }
 
@@ -162,8 +165,6 @@ export class OcrService {
       return { ...limits, maxDimension: Math.min(limits.maxDimension, data.maxDimension), languages: data.languages,
         available: data.languages.length > 0, ...(data.languages.length ? {} : { reason: "Windows 未安装 OCR 语言。请在系统设置中为所需语言添加文字识别组件。" }) };
     } catch (error) {
-      // A fresh capabilities request can retry a transient process start failure.
-      this.capabilitiesRequest = null;
       return { ...limits, available: false, languages: [], reason: `无法启动本地 OCR：${error instanceof Error ? error.message : String(error)}` };
     }
   }
