@@ -249,6 +249,7 @@ const referenceLayerEl = document.createElement("div");
 referenceLayerEl.id = "reference-layer"; referenceLayerEl.setAttribute("aria-hidden", "true");
 pageWrapperEl.append(referenceLayerEl);
 const explainSelectionBtn = document.getElementById("explain-selection-btn") as HTMLButtonElement;
+const highlightSelectionBtn = document.getElementById("highlight-selection-btn") as HTMLButtonElement;
 const selectionStatusEl = document.getElementById("selection-status")!;
 const outlineToggle = document.getElementById("outline-toggle") as HTMLButtonElement;
 const readerNavigation = createReaderNavigation({
@@ -338,6 +339,7 @@ function captureReadingContext(text?: string, rects?: SelectionRect[]): ReadingC
 let selectionSnapshot: ReadingSelection | null = null;
 let pressedSelection: ReadingSelection | null = null;
 let explanationSending = false;
+let selectionFeedback: { text: string; detail: string } | null = null;
 let contextRevision = 0;
 let renderedText: { generation: number; page: number } | null = null;
 function readSelection(): ReadingSelection | null {
@@ -350,7 +352,7 @@ function readSelection(): ReadingSelection | null {
   const text = (ocrPanel.result() ? textFromRange(range) : selection.toString()).replace(/\s+/g, " ").trim();
   const origin = pageWrapperEl.getBoundingClientRect();
   const round = (n: number) => Math.round(n * 100) / 100;
-  const rects = Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0).map(r => ({
+  const rects = uniqueRangeRects(range).map(r => ({
     x: round((r.left - origin.left) / scale), y: round((r.top - origin.top) / scale),
     width: round(r.width / scale), height: round(r.height / scale),
   }));
@@ -367,14 +369,18 @@ function readSelection(): ReadingSelection | null {
 }
 function refreshSelection() {
   selectionSnapshot = readSelection();
-  document.querySelector(".selection-bar")!.classList.toggle("has-selection", Boolean(selectionSnapshot) || explanationSending);
+  if (selectionSnapshot) selectionFeedback = null;
+  document.querySelector(".selection-bar")!.classList.toggle("has-selection", Boolean(selectionSnapshot) || explanationSending || Boolean(selectionFeedback));
   explainSelectionBtn.disabled = !selectionSnapshot || explanationSending;
+  highlightSelectionBtn.disabled = !selectionSnapshot?.context.location.rects.length || explanationSending;
+  selectionStatusEl.title = selectionFeedback?.detail ?? "";
   if (!explanationSending) selectionStatusEl.textContent = selectionSnapshot
     ? `第 ${selectionSnapshot.page} 页 · 已选 ${selectionSnapshot.text.length} 字：${selectionSnapshot.text.slice(0, 60)}`
-    : "选中原文，向小吉提问";
+    : selectionFeedback?.text ?? "选中原文，向小吉提问";
 }
 function clearReadingSelection() {
   contextRevision++;
+  selectionFeedback = null;
   selectionSnapshot = null;
   pressedSelection = null;
   window.getSelection()?.removeAllRanges();
@@ -391,6 +397,7 @@ explainSelectionBtn.addEventListener("click", async () => {
   if (!selected || selected.document !== pdfDocument || selected.page !== currentPage || explanationSending) return;
   explanationSending = true;
   explainSelectionBtn.disabled = true;
+  highlightSelectionBtn.disabled = true;
   selectionStatusEl.textContent = "正在发送选中原文…";
   try {
     await host.ask(selected.context,
@@ -401,8 +408,39 @@ explainSelectionBtn.addEventListener("click", async () => {
   } finally {
     explanationSending = false;
     explainSelectionBtn.disabled = !readSelection();
+    highlightSelectionBtn.disabled = !readSelection()?.context.location.rects.length;
   }
 });
+highlightSelectionBtn.addEventListener("pointerdown", event => {
+  pressedSelection = readSelection();
+  if (pressedSelection) event.preventDefault();
+});
+highlightSelectionBtn.addEventListener("click", () => {
+  const selected = pressedSelection ?? readSelection(), viewport = renderedViewport;
+  pressedSelection = null;
+  if (!selected || !viewport || isRendering || explanationSending || selected.document !== pdfDocument
+    || selected.page !== currentPage || selected.context.location.rotation !== viewport.rotation) return;
+  // Use the captured range only: the same words elsewhere on the page are unrelated.
+  const rects = selected.context.location.rects.map(rect => screenRectToPdf({
+    x: rect.x * viewport.scale, y: rect.y * viewport.scale,
+    width: rect.width * viewport.scale, height: rect.height * viewport.scale,
+  }, viewport));
+  if (!rects.length) return;
+  addAnnotation({ type: "highlight", id: crypto.randomUUID(), page: selected.page, rects,
+    content: (selected.context.textSource?.kind === "ocr" ? "OCR 文字，未经人工核对：\n" : "") + selected.text });
+  const saved = persistAnnotations();
+  clearReadingSelection();
+  selectionFeedback = saved
+    ? { text: "已高亮，可撤销", detail: "高亮已记录在当前客户端本机；下载或保存 PDF 才会写入文件。可在批注面板删除，或按 Ctrl/Cmd+Z 撤销。" }
+    : { text: "高亮未保存，请下载", detail: "高亮已添加，但未能保存到本机。请先下载含高亮的 PDF 留存，再关闭阅读器。" };
+  refreshSelection();
+});
+function dismissSelectionFeedback() {
+  if (selectionFeedback) { selectionFeedback = null; refreshSelection(); }
+}
+canvasContainerEl.addEventListener("pointerdown", dismissSelectionFeedback);
+canvasContainerEl.addEventListener("wheel", dismissSelectionFeedback, { passive: true });
+
 document.addEventListener("copy", event => {
   const selected = readSelection();
   if (selected?.context.textSource?.kind === "ocr" && event.clipboardData) {
@@ -2905,7 +2943,7 @@ function scanPageBaselineAnnotations(
   }
 }
 
-function persistAnnotations(): void {
+function persistAnnotations(): boolean {
   // Compute diff relative to PDF baseline
   const currentAnnotations: PdfAnnotationDef[] = [];
   for (const tracked of annotationMap.values()) {
@@ -2937,11 +2975,13 @@ function persistAnnotations(): void {
   if (!isRestoring) setDirty(!isDiffEmpty(diff));
 
   const key = annotationStorageKey();
-  if (!key) return;
+  if (!key) return false;
   try {
     localStorage.setItem(key, serializeDiff(diff));
+    return true;
   } catch {
-    // localStorage may be full or unavailable
+    // The annotation remains available to export in this session.
+    return false;
   }
 }
 
