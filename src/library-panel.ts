@@ -111,7 +111,10 @@ export function createLibraryPanel(container: HTMLElement, call: LibraryCall, op
   function updateSummary(finished = false) {
     const number = (state: UploadState) => uploads.filter(upload => upload.state === state).length;
     const done = number("done"), failed = number("failed"), stopped = number("cancelled");
-    status.textContent = `${finished ? (cancelled ? "已停止导入。" : "导入完成。") : "正在导入。"}${done} 份已加入书库，${failed} 份失败${stopped ? `，${stopped} 份已取消` : ""}${finished ? "。相同文件只保留一份。" : `，${number("waiting")} 份等待。`}`;
+    const outcome = !finished ? "正在导入。" : cancelled ? "已停止导入。"
+      : done === 0 && failed > 0 ? "导入失败。" : failed > 0 ? "部分文件导入成功。" : "导入完成。";
+    const saved = done > 0 ? `${done} 份已加入书库` : "尚无文件入库";
+    status.textContent = `${outcome}${saved}，${failed} 份失败${stopped ? `，${stopped} 份已取消` : ""}${finished ? "。" : `，${number("waiting")} 份等待。`}`;
   }
   async function uploadOne(upload: Upload) {
     const { file } = upload;
