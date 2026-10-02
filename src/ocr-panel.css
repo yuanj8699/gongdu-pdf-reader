@@ -14,3 +14,11 @@
 .ocr-options > div { display: flex; gap: .5rem; flex-wrap: wrap; padding: .5rem 0; }
 #ocr-transcript { flex-basis: 100%; }
 #ocr-transcript-text { max-height: 9rem; overflow: auto; white-space: pre-wrap; font: inherit; margin: .4rem 0; padding: .5rem; background: var(--bg100); color: var(--text000); }
+
+/* Keep optional recognition controls in the page display row. */
+#reader-ocr { margin-left: auto; max-width: 100%; min-width: 0; font-size: .8rem; }
+#reader-ocr > summary { padding: .4rem .35rem; cursor: pointer; min-height: 32px; box-sizing: border-box; align-content: center; }
+#reader-ocr > summary:focus-visible { outline: 2px solid var(--reader-accent); outline-offset: 2px; }
+#reader-ocr[open] { flex-basis: 100%; }
+#reader-ocr .ocr-panel { padding: .4rem 0 0; border: 0; }
+@media (pointer: coarse) { #reader-ocr > summary { min-height: 44px; } }

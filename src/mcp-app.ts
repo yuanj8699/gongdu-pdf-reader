@@ -544,7 +544,7 @@ function requestFitToContent() {
   // All visible control rows + document padding + page + rounding buffer.
   // Note: search bar is absolutely positioned over the document area, so excluded
   const toolbarHeight = toolbarEl.offsetHeight;
-  const extraControlsHeight = Array.from(mainEl.querySelectorAll<HTMLElement>(".zoom-bar, .selection-bar, .library-bar, .study-panel, .ocr-panel, .reader-widgets"))
+  const extraControlsHeight = Array.from(mainEl.querySelectorAll<HTMLElement>(".zoom-bar, .selection-bar, .library-bar, .study-panel, .reader-widgets"))
     .filter(row => getComputedStyle(row).position !== "absolute")
     .reduce((height, row) => height + row.offsetHeight, 0);
   const pageWrapperHeight = pageWrapperEl.offsetHeight;
@@ -855,7 +855,13 @@ const readerSettings = createReaderSettings(libraryBar);
 const readerWidgets = createReaderWidgets(document.getElementById("reader-stage")!);
 const focusReading = document.createElement("button"); focusReading.id = "focus-reading"; focusReading.className = "reader-action"; focusReading.type = "button";
 document.querySelector(".toolbar-right")!.prepend(focusReading);
+let navigationBeforeFocus: boolean | undefined;
 function setFocusReading(value: boolean) {
+  const wasFocused = document.documentElement.classList.contains("focus-reading");
+  if (value && !wasFocused) { navigationBeforeFocus = readerNavigation.expanded; readerNavigation.setExpanded(false); }
+  else if (!value && wasFocused && navigationBeforeFocus !== undefined) {
+    readerNavigation.setExpanded(navigationBeforeFocus); navigationBeforeFocus = undefined;
+  }
   document.documentElement.classList.toggle("focus-reading", value);
   focusReading.textContent = value ? "退出专注" : "专注阅读"; focusReading.setAttribute("aria-pressed", String(value));
 }
@@ -899,8 +905,13 @@ async function openLibraryAsset(assetId: string) {
 const libraryPanel = createLibraryPanel(document.getElementById("library-panel")!, callLibrary, openLibraryAsset);
 const textReader = createTextReader(document.getElementById("text-reader")!, callLibrary, host,
   (asset, line) => readerWidgets.setProgress({ current: line, total: asset.pageCount, unit: "行", title: asset.title }));
+const ocrDisclosure = document.createElement("details"); ocrDisclosure.id = "reader-ocr";
+const ocrSummary = document.createElement("summary"); ocrSummary.textContent = "文字识别";
+ocrSummary.addEventListener("pointerdown", event => { if (readSelection()) event.preventDefault(); });
 const ocrContainer = document.createElement("div");
-document.querySelector(".selection-bar")!.after(ocrContainer);
+ocrDisclosure.append(ocrSummary, ocrContainer);
+document.querySelector(".zoom-bar")!.append(ocrDisclosure);
+ocrDisclosure.addEventListener("toggle", requestFitToContent);
 const ocrLayer = document.createElement("div"); ocrLayer.className = "ocr-text-layer"; ocrLayer.hidden = true;
 ocrLayer.setAttribute("aria-label", "OCR 识别文字，未经核对");
 pageWrapperEl.append(ocrLayer);
@@ -923,7 +934,7 @@ const ocrPanel = createOcrPanel(ocrContainer, ocrLayer, textLayerEl, callLibrary
     if (bytes.length > Math.ceil(8 * 1024 * 1024 / 3) * 4) throw new Error("本页图像过大，暂不能识别。");
     return bytes;
   } finally { signal.removeEventListener("abort", cancelRender); canvas.width = canvas.height = 0; }
-}, () => { clearReadingSelection(); studyPanel.refresh(); void updatePageContext(); });
+}, () => { ocrSummary.textContent = ocrPanel.result() ? "OCR 已就绪" : "文字识别"; clearReadingSelection(); studyPanel.refresh(); void updatePageContext(); });
 const studyContainer = document.createElement("section");
 studyContainer.setAttribute("aria-label", "共读实践与笔记");
 libraryBar.after(studyContainer);
@@ -3651,6 +3662,7 @@ async function renderPage() {
     if (renderGeneration !== loadGeneration || pageToRender !== currentPage) return;
     renderedText = { generation: renderGeneration, page: pageToRender };
     renderedViewport = viewport;
+    ocrSummary.textContent = textContent.items.some(item => "str" in item && item.str.trim()) ? "文字识别" : "扫描页识字";
     ocrPanel.rendered({ key: renderGeneration + ":" + pageToRender + ":" + viewport.rotation,
       width: viewport.width, height: viewport.height, hasText: textContent.items.some(item => "str" in item && item.str.trim()) });
     if (pageLanding !== null) {
