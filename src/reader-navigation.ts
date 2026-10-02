@@ -1,9 +1,11 @@
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import "./reader-navigation.css";
 import type { Bookmark } from "./library-types.js";
+import { createPageThumbnails } from "./page-thumbnails.js";
 
 type PdfOutlineItem = Awaited<ReturnType<PDFDocumentProxy["getOutline"]>>[number];
-type NavigationTab = "outline" | "bookmarks";
+const navigationTabs = ["outline", "pages", "bookmarks"] as const;
+type NavigationTab = typeof navigationTabs[number];
 
 interface OutlineEntry {
   id: string;
@@ -113,11 +115,11 @@ export function createReaderNavigation(
   container.setAttribute("role", "navigation");
   container.setAttribute("aria-label", "阅读导航");
   const toggle = button("reader-navigation-toggle", "");
-  toggle.setAttribute("aria-label", "目录与书签");
+  toggle.setAttribute("aria-label", "阅读导航");
   toggle.setAttribute("aria-controls", `${id}-body`);
   const toggleIcon = element("span", "reader-navigation-icon", "☰");
   toggleIcon.setAttribute("aria-hidden", "true");
-  toggle.append(toggleIcon, element("span", "reader-navigation-label", "目录与书签"));
+  toggle.append(toggleIcon, element("span", "reader-navigation-label", "阅读导航"));
   const toggleChevron = element("span", "reader-navigation-chevron", "‹");
   toggleChevron.setAttribute("aria-hidden", "true");
   toggle.append(toggleChevron);
@@ -125,21 +127,24 @@ export function createReaderNavigation(
   const body = element("div", "reader-navigation-body");
   body.id = `${id}-body`;
   const mobileHeader = element("div", "reader-navigation-mobile-header");
-  mobileHeader.append(element("span", "", "目录与书签"));
+  mobileHeader.append(element("span", "", "阅读导航"));
   const closeButton = button("reader-navigation-close", "×");
-  closeButton.setAttribute("aria-label", "收起目录与书签");
+  closeButton.setAttribute("aria-label", "收起阅读导航");
   mobileHeader.append(closeButton);
 
   const tabList = element("div", "reader-navigation-tabs");
   tabList.setAttribute("role", "tablist");
   tabList.setAttribute("aria-label", "阅读导航类型");
   const outlineTab = button("reader-navigation-tab", "目录");
+  const pagesTab = button("reader-navigation-tab", "页面");
   const bookmarksTab = button("reader-navigation-tab", "书签");
   const outlinePanel = element("div", "reader-navigation-panel");
+  const pagesPanel = element("div", "reader-navigation-panel");
   const bookmarksPanel = element("div", "reader-navigation-panel");
-  const tabs = { outline: outlineTab, bookmarks: bookmarksTab };
-  const panels = { outline: outlinePanel, bookmarks: bookmarksPanel };
-  for (const name of ["outline", "bookmarks"] as const) {
+  const tabs = { outline: outlineTab, pages: pagesTab, bookmarks: bookmarksTab };
+  const panels = { outline: outlinePanel, pages: pagesPanel, bookmarks: bookmarksPanel };
+  const thumbnails = createPageThumbnails(pagesPanel, { onNavigate: navigate });
+  for (const name of navigationTabs) {
     const tab = tabs[name];
     const panel = panels[name];
     tab.id = `${id}-${name}-tab`;
@@ -158,9 +163,7 @@ export function createReaderNavigation(
           ? "outline"
           : event.key === "End"
             ? "bookmarks"
-            : name === "outline"
-              ? "bookmarks"
-              : "outline";
+            : navigationTabs[(navigationTabs.indexOf(name) + (event.key === "ArrowRight" ? 1 : -1) + navigationTabs.length) % navigationTabs.length];
       selectTab(next);
       tabs[next].focus();
     });
@@ -170,7 +173,10 @@ export function createReaderNavigation(
   const outlineMessage = element("p", "reader-navigation-empty");
   const outlineList = element("ul", "reader-outline-list");
   outlineList.setAttribute("aria-label", "PDF 章节");
-  outlinePanel.append(outlineMessage, outlineList);
+  const browsePages = button("reader-bookmark-add", "浏览页面缩略图");
+  browsePages.hidden = true;
+  browsePages.addEventListener("click", () => { selectTab("pages"); pagesTab.focus(); });
+  outlinePanel.append(outlineMessage, browsePages, outlineList);
   const bookmarkActions = element("div", "reader-bookmark-actions");
   const addBookmarkButton = button("reader-bookmark-add", "+ 添加当前页");
   addBookmarkButton.setAttribute("aria-label", "添加当前页书签");
@@ -196,16 +202,17 @@ export function createReaderNavigation(
   const announcement = element("p", "reader-navigation-sr-only");
   announcement.setAttribute("role", "status");
   announcement.setAttribute("aria-live", "polite");
-  body.append(mobileHeader, tabList, outlinePanel, bookmarksPanel, announcement);
+  body.append(mobileHeader, tabList, outlinePanel, pagesPanel, bookmarksPanel, announcement);
   container.replaceChildren(toggle, body);
 
   function selectTab(name: NavigationTab) {
     selectedTab = name;
-    for (const key of ["outline", "bookmarks"] as const) {
+    for (const key of navigationTabs) {
       tabs[key].setAttribute("aria-selected", String(key === name));
       tabs[key].tabIndex = key === name ? 0 : -1;
       panels[key].hidden = key !== name;
     }
+    thumbnails.setActive(expanded && name === "pages");
   }
 
   function setExpanded(value: boolean) {
@@ -214,8 +221,9 @@ export function createReaderNavigation(
     if (!value && body.contains(document.activeElement)) toggle.focus();
     container.classList.toggle("is-collapsed", !value);
     toggle.setAttribute("aria-expanded", String(value));
-    toggle.title = value ? "收起目录与书签" : "展开目录与书签";
+    toggle.title = value ? "收起阅读导航" : "展开阅读导航";
     body.hidden = !value;
+    thumbnails.setActive(value && selectedTab === "pages");
     if (changed && value && narrowScreen.matches) tabs[selectedTab].focus();
     if (changed) {
       options.onExpandedChange?.(value);
@@ -293,6 +301,7 @@ export function createReaderNavigation(
 
   function setCurrentPage(page: number) {
     currentPage = page;
+    thumbnails.setCurrentPage(page);
     const active = currentEntry(page);
     const ancestors = new Set<OutlineEntry>();
     for (let parent = active?.parent; parent; parent = parent.parent) ancestors.add(parent);
@@ -452,6 +461,8 @@ export function createReaderNavigation(
 
   function clear() {
     generation++;
+    thumbnails.clear();
+    browsePages.hidden = true;
     pdf = null;
     storageKey = null;
     bookmarkStore = undefined;
@@ -473,6 +484,9 @@ export function createReaderNavigation(
     if (!documentKey.trim()) throw new Error("Reader navigation requires a stable document key");
     clear();
     pdf = document;
+    thumbnails.load(document);
+    thumbnails.setCurrentPage(options.getCurrentPage());
+    thumbnails.setActive(expanded && selectedTab === "pages");
     storageKey = STORAGE_PREFIX + encodeURIComponent(documentKey);
     bookmarkStore = store;
     storageNote.textContent = store ? "书签已保存到本机书库，重启后可恢复。" : "书签仅保存在此设备的浏览器中。";
@@ -524,13 +538,15 @@ export function createReaderNavigation(
       renderOutline(outline, outlineList);
       outlineMessage.textContent = outline.length
         ? unresolved ? "部分目录项无法跳转，仍可使用页码导航。" : ""
-        : "此 PDF 未提供章节目录。你可以使用页码导航，或添加自己的书签。";
+        : "此 PDF 未提供章节目录。你可以浏览页面缩略图、使用页码导航，或添加自己的书签。";
+      browsePages.hidden = outline.length > 0;
       outlineMessage.hidden = Boolean(outline.length && !unresolved);
       setCurrentPage(options.getCurrentPage());
     } catch (error) {
       if (generation !== loadGeneration) return;
       console.warn("[PDF navigation] Could not load outline", error);
-      outlineMessage.textContent = "无法读取此 PDF 的目录。你仍可使用页码导航和书签。";
+      outlineMessage.textContent = "无法读取此 PDF 的目录。你仍可浏览页面缩略图、使用页码导航和书签。";
+      browsePages.hidden = false;
       outlineMessage.hidden = false;
     } finally {
       if (generation === loadGeneration) outlinePanel.removeAttribute("aria-busy");
@@ -570,6 +586,7 @@ export function createReaderNavigation(
     get expanded() { return expanded; },
     destroy() {
       clear();
+      thumbnails.destroy();
       container.removeEventListener("keydown", handleKeyboard);
       narrowScreen.removeEventListener("change", handleScreenChange);
       container.replaceChildren();

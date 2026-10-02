@@ -359,3 +359,8 @@
     min-height: 40px;
   }
 }
+
+@media (max-width: 700px), (pointer: coarse) {
+  .reader-navigation-tab { min-height: 44px; }
+  .reader-navigation-close { flex-basis: 44px; width: 44px; min-height: 44px; }
+}
