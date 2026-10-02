@@ -147,6 +147,8 @@ function safeImageSrc(def: {
 let pdfDocument: pdfjsLib.PDFDocumentProxy | null = null;
 let readerLoadError: string | null = null;
 let currentPage = 1;
+let navigationRevision = 0;
+let noteReturnRequest = 0;
 let totalPages = 0;
 let scale = 1.0;
 const ZOOM_MIN = 0.5;
@@ -243,6 +245,9 @@ const searchCloseBtn = document.getElementById(
 const highlightLayerEl = document.getElementById("highlight-layer")!;
 const annotationLayerEl = document.getElementById("annotation-layer")!;
 const pageWrapperEl = document.querySelector(".page-wrapper") as HTMLElement;
+const referenceLayerEl = document.createElement("div");
+referenceLayerEl.id = "reference-layer"; referenceLayerEl.setAttribute("aria-hidden", "true");
+pageWrapperEl.append(referenceLayerEl);
 const explainSelectionBtn = document.getElementById("explain-selection-btn") as HTMLButtonElement;
 const selectionStatusEl = document.getElementById("selection-status")!;
 const outlineToggle = document.getElementById("outline-toggle") as HTMLButtonElement;
@@ -270,6 +275,50 @@ let pageLabels: string[] | null = null;
 type PdfViewport = ReturnType<pdfjsLib.PDFPageProxy["getViewport"]>;
 let renderedRotation = 0;
 let renderedViewport: PdfViewport | null = null;
+type ReferenceLocation = { document: pdfjsLib.PDFDocumentProxy; generation: number; page: number; rotation: number; rects: SelectionRect[] };
+let referenceLocation: ReferenceLocation | null = null;
+function clearReferenceLocation() { referenceLocation = null; referenceLayerEl.replaceChildren(); }
+function dismissReferenceLocation() { noteReturnRequest++; clearReferenceLocation(); }
+function paintReferenceLocation() {
+  referenceLayerEl.replaceChildren();
+  const target = referenceLocation, viewport = renderedViewport;
+  if (!target || !viewport || target.document !== pdfDocument || target.generation !== loadGeneration
+    || target.page !== currentPage || target.rotation !== viewport.rotation) return;
+  for (const rect of target.rects) {
+    const marker = document.createElement("div"); marker.className = "reference-highlight";
+    marker.style.left = rect.x * viewport.scale + "px";
+    marker.style.top = rect.y * viewport.scale + "px";
+    marker.style.width = rect.width * viewport.scale + "px";
+    marker.style.height = rect.height * viewport.scale + "px";
+    referenceLayerEl.append(marker);
+  }
+  const first = referenceLayerEl.firstElementChild;
+  if (!first) return;
+  const bounds = first.getBoundingClientRect(), container = canvasContainerEl.getBoundingClientRect();
+  canvasContainerEl.scrollTo({ behavior: "instant",
+    top: Math.max(0, canvasContainerEl.scrollTop + bounds.top - container.top - container.height * .3),
+    left: Math.max(0, canvasContainerEl.scrollLeft + bounds.left - container.left - Math.max(16, (container.width - bounds.width) / 2)),
+  });
+}
+function showReferenceLocation(context: ReadingContext) {
+  if (!pdfDocument || !renderedViewport) return;
+  const width = renderedViewport.width / renderedViewport.scale, height = renderedViewport.height / renderedViewport.scale;
+  const seen = new Set<string>();
+  // Stored notes are an input boundary. Missing/invalid rectangles mean page-only navigation.
+  const rects = (context.location.coordinateSpace === "rotated-page-top-left-points" && Array.isArray(context.location.rects) ? context.location.rects : []).flatMap(rect => {
+    if (!rect || ![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) || rect.width <= 0 || rect.height <= 0) return [];
+    const x = Math.max(0, rect.x), y = Math.max(0, rect.y);
+    const right = Math.min(width, rect.x + rect.width), bottom = Math.min(height, rect.y + rect.height);
+    if (right <= x || bottom <= y) return [];
+    const value = { x, y, width: right - x, height: bottom - y }, key = JSON.stringify(value);
+    if (seen.has(key)) return [];
+    seen.add(key); return [value];
+  });
+  referenceLocation = rects.length ? { document: pdfDocument, generation: loadGeneration,
+    page: currentPage, rotation: renderedViewport.rotation, rects } : null;
+  clearReadingSelection();
+  paintReferenceLocation();
+}
 // View-only rotation belongs to this open document, never to its saved bytes.
 const pageViewRotations = new Map<number, number>();
 const pageIntrinsicRotations = new Map<number, number>();
@@ -870,27 +919,37 @@ libraryBar.after(studyContainer);
 const studyPanel = createStudyPanel(studyContainer, host,
   () => textReader.context() ?? (pdfDocument ? readSelection()?.context ?? captureReadingContext() : null),
   async (context: StudyContext) => {
+    const request = ++noteReturnRequest, startedNavigation = navigationRevision, startedGeneration = loadGeneration;
     if (context.identity.kind !== "library") throw new Error("请先把资料加入书库。");
     const expected = context.identity;
     const asset = await callLibrary<LibraryAsset>("library_get_asset", { assetId: expected.assetId });
+    if (request !== noteReturnRequest || startedNavigation !== navigationRevision || startedGeneration !== loadGeneration) throw new DOMException("阅读位置已变化，已取消较早的返回请求。", "AbortError");
     if (asset.sha256 !== expected.sha256 || asset.versionId !== expected.versionId || asset.documentId !== expected.documentId) throw new Error("书库资料版本与记录不一致。");
     if (context.location.format !== (asset.githubSource?.format ?? "pdf")) throw new Error("记录的位置格式与原文不一致。");
     const position = context.location.format === "pdf" ? context.location.pageNumber : context.location.lineStart;
     if (!Number.isInteger(position) || position < 1 || position > asset.pageCount) throw new Error("记录中的阅读位置超出资料范围。");
     if (context.location.format !== "pdf" && (!Number.isInteger(context.location.lineEnd) || context.location.lineEnd < position || context.location.lineEnd > asset.pageCount)) throw new Error("记录中的行范围无效。");
-    await openLibraryAsset(asset.assetId);
+    const samePdf = context.location.format === "pdf" && pdfDocument && readingStateReady && !readerLoadError
+      && currentLibraryAsset?.assetId === expected.assetId && currentLibraryAsset.documentId === expected.documentId
+      && currentLibraryAsset.versionId === expected.versionId && currentLibraryAsset.sha256 === expected.sha256;
+    if (!samePdf) await openLibraryAsset(asset.assetId);
+    if (request !== noteReturnRequest) throw new DOMException("已取消较早的返回请求。", "AbortError");
     if (context.location.format === "pdf") {
       if (!pdfDocument || !readingStateReady || errorEl.style.display !== "none") throw new Error("原文尚未成功加载，请检查阅读器的错误提示。");
-      await navigateReadingPage(position, context.location.rotation);
+      const document = pdfDocument, generation = loadGeneration;
+      const navigation = await navigateReadingPage(position, context.location.rotation);
       while (isRendering) await renderFinished;
       await readingSaveWork;
       if (readerLoadError) throw new Error(readerLoadError);
-      if (currentLibraryAsset?.assetId !== expected.assetId || renderedText?.generation !== loadGeneration || renderedText.page !== position) throw new Error("阅读目标已改变，未完成此次返回。");
+      if (request !== noteReturnRequest || navigation !== navigationRevision || document !== pdfDocument || generation !== loadGeneration
+        || currentLibraryAsset?.assetId !== expected.assetId || currentPage !== position || isRendering
+        || renderedText?.generation !== generation || renderedText.page !== position || renderedViewport?.rotation !== context.location.rotation) throw new DOMException("阅读目标已改变，已取消此次返回。", "AbortError");
       if (readingSaveFailed) throw new Error("原文已打开，但返回位置尚未保存，请重试保存。");
+      showReferenceLocation(context as ReadingContext);
     } else {
       await textReader.go(position);
       const current = textReader.context();
-      if (current?.identity.kind !== "library" || current.identity.assetId !== expected.assetId) throw new Error("阅读目标已改变，未完成此次返回。");
+      if (current?.identity.kind !== "library" || current.identity.assetId !== expected.assetId) throw new DOMException("阅读目标已改变，已取消此次返回。", "AbortError");
     }
   });
 libraryHome.addEventListener("click", async () => {
@@ -1119,7 +1178,7 @@ function updateControls() {
   // A completed render must not replace a page number the user is still typing.
   if (document.activeElement !== pageInputEl) pageInputEl.value = String(currentPage);
   pageInputEl.max = String(totalPages);
-  totalPagesEl.textContent = `of ${totalPages}`;
+  totalPagesEl.textContent = `共 ${totalPages} 页`;
   prevBtn.disabled = currentPage <= 1;
   nextBtn.disabled = currentPage >= totalPages;
   if (document.activeElement !== zoomLevelEl) zoomLevelEl.value = `${Math.round(scale * 100)}%`;
@@ -3279,7 +3338,7 @@ async function savePdf(): Promise<void> {
 
   saveInProgress = true;
   saveBtn.disabled = true;
-  saveBtn.title = "Saving...";
+  saveBtn.title = "正在保存…";
 
   try {
     const pdfBytes = await getAnnotatedPdfBytes();
@@ -3320,14 +3379,14 @@ async function savePdf(): Promise<void> {
     saveBtn.disabled = false;
   } finally {
     saveInProgress = false;
-    saveBtn.title = "Save to file (overwrites original)";
+    saveBtn.title = "保存到原文件（覆盖原文件）";
   }
 }
 
 async function downloadAnnotatedPdf(): Promise<void> {
   if (!pdfDocument) return;
   downloadBtn.disabled = true;
-  downloadBtn.title = "Preparing download...";
+  downloadBtn.title = "正在准备下载…";
 
   try {
     const pdfBytes = await getAnnotatedPdfBytes();
@@ -3372,7 +3431,7 @@ async function downloadAnnotatedPdf(): Promise<void> {
     log.error("Download error:", err);
   } finally {
     downloadBtn.disabled = false;
-    downloadBtn.title = "Download PDF";
+    downloadBtn.title = "下载 PDF";
   }
 }
 
@@ -3386,6 +3445,7 @@ let finishRender: (() => void) | undefined;
 async function renderPage() {
   if (!pdfDocument) return;
   renderedText = null;
+  referenceLayerEl.replaceChildren();
   clearHighlights();
   ocrPanel.invalidate();
   clearReadingSelection();
@@ -3651,6 +3711,7 @@ async function renderPage() {
     renderAnnotationsForPage(pageToRender);
 
     updateControls();
+    paintReferenceLocation();
     updatePageContext();
 
     // Request host to resize app to fit content (inline mode only)
@@ -3719,6 +3780,7 @@ function goToPage(page: number, landing: "top" | "bottom" = "top") {
   if (!pdfDocument || !Number.isInteger(page)) return;
   const targetPage = Math.max(1, Math.min(page, totalPages));
   if (targetPage !== currentPage) {
+    navigationRevision++; clearReferenceLocation();
     clearReadingSelection();
     selectAnnotation(null);
     preloadPaused = true;
@@ -3738,6 +3800,7 @@ function nextPage() {
   goToPage(currentPage + 1);
 }
 function scrollReadingPage(direction: -1 | 1) {
+  dismissReferenceLocation();
   if (!pdfDocument || isRendering || renderedText?.generation !== loadGeneration || renderedText.page !== currentPage) return;
   const room = canvasContainerEl.scrollHeight - canvasContainerEl.clientHeight;
   if (direction > 0 && canvasContainerEl.scrollTop < room - 2 || direction < 0 && canvasContainerEl.scrollTop > 2) {
@@ -3785,12 +3848,13 @@ function zoomOut() {
 async function navigateReadingPage(pageNumber: number, rotation?: number) {
   const document = pdfDocument;
   if (!document) return;
-  if (rotation === undefined) { goToPage(pageNumber); return; }
-  const startedPage = currentPage;
+  if (rotation === undefined) { goToPage(pageNumber); return navigationRevision; }
+  const startedPage = currentPage, startedNavigation = navigationRevision;
   const page = await document.getPage(pageNumber);
-  if (document !== pdfDocument || currentPage !== startedPage) throw new Error('阅读位置已变化，请重新定位。');
+  if (document !== pdfDocument || currentPage !== startedPage || navigationRevision !== startedNavigation) throw new DOMException('阅读位置已变化，请重新定位。', 'AbortError');
   if (![0, 90, 180, 270].includes(rotation)) throw new Error('记录的页面方向无效。');
   cancelWheelZoom();
+  const navigation = ++navigationRevision; clearReferenceLocation();
   pageViewRotations.set(pageNumber, (rotation - page.rotate + 360) % 360);
   renderedText = null; ocrPanel.invalidate();
   clearReadingSelection();
@@ -3800,10 +3864,11 @@ async function navigateReadingPage(pageNumber: number, rotation?: number) {
   saveCurrentPage();
   if (!userHasZoomed) {
     const fitted = await computeFitScale();
-    if (document !== pdfDocument || currentPage !== pageNumber) throw new Error('阅读位置已变化，请重新定位。');
+    if (document !== pdfDocument || currentPage !== pageNumber || navigationRevision !== navigation) throw new DOMException('阅读位置已变化，请重新定位。', 'AbortError');
     if (fitted !== null) scale = fitted;
   }
   await renderPage();
+  return navigation;
 }
 rotatePageBtn.addEventListener('click', async () => {
   if (!pdfDocument || isRendering || rotatePageBtn.disabled) return;
@@ -4057,6 +4122,9 @@ textLayerEl.addEventListener("mousedown", () => {
 });
 
 // Click on empty area / text layer to deselect annotations and blur fields
+canvasContainerEl.addEventListener("pointerdown", dismissReferenceLocation);
+canvasContainerEl.addEventListener("wheel", dismissReferenceLocation, { passive: true });
+canvasContainerEl.addEventListener("touchstart", dismissReferenceLocation, { passive: true });
 canvasContainerEl.addEventListener("mousedown", (e) => {
   const target = e.target as HTMLElement;
   // Deselect if clicking on container, canvas, page wrapper, or text layer content
@@ -4666,6 +4734,7 @@ async function fetchRange(
  * Preserves currentPage (clamped). Does not stop/restart the poll loop.
  */
 async function reloadPdf(): Promise<void> {
+  navigationRevision++; clearReferenceLocation();
   pageViewRotations.clear(); pageIntrinsicRotations.clear();
   ocrPanel.invalidate(true);
   clearReadingSelection();
@@ -4835,7 +4904,7 @@ function updateLoadingIndicator() {
   const offset = CIRCLE_CIRCUMFERENCE * (1 - pct);
   loadingIndicatorArc.style.strokeDashoffset = String(offset);
   loadingIndicatorEl.style.display = "inline-flex";
-  loadingIndicatorEl.title = `${pagesLoaded}/${totalPages} pages loaded`;
+  loadingIndicatorEl.title = `已加载 ${pagesLoaded}/${totalPages} 页`;
   if (preloadErrors.length > 0) {
     loadingIndicatorEl.classList.add("error");
     const failedPages = preloadErrors.map((e) => e.page).join(", ");
@@ -4916,6 +4985,7 @@ async function startPreloading() {
 // Serialize document changes: a late result must not attach state to another PDF.
 let readerLoadWork: Promise<void> = Promise.resolve();
 function queueReaderResult(result: CallToolResult) {
+  navigationRevision++; clearReferenceLocation();
   readerLoadWork = readerLoadWork.catch(() => {}).then(async () => {
     studyPanel.setLoading(true);
     try { await handleReaderResult(result); }

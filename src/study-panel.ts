@@ -35,6 +35,7 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
   let visibleIds = new Set<string>();
   let entries: StudyEntry[] = [], sending = false, loadFailed = false, loading = false;
   let unsavedReceiptId: string | null = null;
+  let returnRequest = 0;
   const stored = new Map<string, string>(), pending = new Set<string>();
   const states = new Map<string, HTMLElement>();
   const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -120,9 +121,18 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
       });
       const back = document.createElement("button"); back.type = "button"; back.textContent = "返回原文";
       back.addEventListener("click", async () => {
+        const request = ++returnRequest;
         back.disabled = true;
-        try { await resume(entry.context); history.open = false; status.textContent = `已返回 ${entry.context.title} · ${position(entry.context)}。选区原文保留在记录中。`; }
-        catch (error) { showEntryStatus(entry.id, `返回失败：${message(error)}`, true); }
+        try {
+          await resume(entry.context);
+          if (request !== returnRequest) return;
+          history.open = false;
+          status.textContent = `已返回 ${entry.context.title} · ${position(entry.context)}。选区原文保留在记录中。`;
+        } catch (error) {
+          if (request !== returnRequest || error instanceof DOMException && error.name === "AbortError") {
+            showEntryStatus(entry.id, "已取消较早的返回请求。");
+          } else showEntryStatus(entry.id, `返回失败：${message(error)}`, true);
+        }
         finally { back.disabled = false; }
       });
       const review = document.createElement("button"); review.type = "button"; review.textContent = "检验我的理解";

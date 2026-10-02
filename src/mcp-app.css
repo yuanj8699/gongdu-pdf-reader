@@ -1317,3 +1317,7 @@ body {
   }
   .fullscreen-btn { width: auto; }
 }
+
+/* A note return marks its saved citation without creating PDF annotations. */
+#reference-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.reference-highlight { position: absolute; box-sizing: border-box; border: 1px solid var(--reader-accent); background: color-mix(in srgb, var(--reader-accent) 18%, transparent); pointer-events: none; }
