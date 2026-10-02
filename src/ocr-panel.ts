@@ -3,6 +3,10 @@ import type { OcrCapabilities, OcrJob, OcrResult } from "./ocr-types.js";
 import "./ocr-panel.css";
 
 type Page = { key: string; width: number; height: number; hasText: boolean };
+/** The cached search text and selectable layer must use identical separators. */
+function wordSeparator(left: string, right: string): string {
+  return /[\u3400-\u9fff]$/.test(left) && /^[\u3400-\u9fff]/.test(right) ? "" : " ";
+}
 /** OCR output belongs to the rendered page identity, never to a later page. */
 export function createOcrPanel(container: HTMLElement, layer: HTMLElement, nativeLayer: HTMLElement,
   call: LibraryCall, image: (rotation: number, signal: AbortSignal) => Promise<string>, changed: () => void) {
@@ -20,7 +24,7 @@ export function createOcrPanel(container: HTMLElement, layer: HTMLElement, nativ
   type Run = { controller: AbortController; start?: Promise<{ jobId: string }>; jobId?: string; cancel?: Promise<void> };
   const runs = new Set<Run>();
   let capabilities: OcrCapabilities | undefined;
-  type RecognizedPage = OcrResult & { resultId: string; rotation: number };
+  type RecognizedPage = OcrResult & { resultId: string; rotation: number; searchText: string };
   const cache = new Map<string, RecognizedPage>();
   let active: RecognizedPage | undefined;
   const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -51,7 +55,7 @@ export function createOcrPanel(container: HTMLElement, layer: HTMLElement, nativ
         if (natural > 0) span.style.transform = "scaleX(" + (word.width * width / natural) + ")";
         row.append(span);
         // Preserve word boundaries without introducing spaces between Chinese characters.
-        if (i < line.words.length - 1 && !(/[\u3400-\u9fff]$/.test(word.text) && /^[\u3400-\u9fff]/.test(line.words[i + 1].text))) row.append(" ");
+        if (i < line.words.length - 1) row.append(wordSeparator(word.text, line.words[i + 1].text));
       }
       row.append(document.createElement("br"));
     }
@@ -124,7 +128,9 @@ export function createOcrPanel(container: HTMLElement, layer: HTMLElement, nativ
         if (job.status === "failed") throw new Error(job.error || "本页识别失败。");
         if (job.status === "cancelled") { status.textContent = "已取消识别。"; return; }
         if (!job.result?.text.trim()) { status.textContent = "没有识别出文字。请检查页面方向、清晰度或更换识别语言后重试。"; return; }
-        const recognized = { ...job.result, resultId: localId!, rotation };
+        const searchText = job.result.lines.map(line => line.words.map((word, index) =>
+          (index ? wordSeparator(line.words[index - 1].text, word.text) : "") + word.text).join("")).join("\n");
+        const recognized = { ...job.result, resultId: localId!, rotation, searchText };
         cache.delete(target); cache.set(target, recognized);
         if (cache.size > 8) cache.delete(cache.keys().next().value!);
         paint(recognized); return;
