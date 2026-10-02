@@ -91,6 +91,7 @@ import { createStudyPanel, type StudyContext } from "./study-panel.js";
 import { createReadingContext, withNearbyText, findSelectionInText, assertReferenceTarget, type ReadingContext, type SelectionRect } from "./reading-context.js";
 
 import { withSelectionRange, textFromRange } from "./selection-context.js";
+import { buildTextRangeIndex, findTextMatches, normalizeSearchText } from "./text-ranges.js";
 
 const MAX_MODEL_CONTEXT_LENGTH = 15000;
 // Configure PDF.js worker
@@ -271,7 +272,9 @@ let renderedRotation = 0;
 let renderedViewport: PdfViewport | null = null;
 // View-only rotation belongs to this open document, never to its saved bytes.
 const pageViewRotations = new Map<number, number>();
+const pageIntrinsicRotations = new Map<number, number>();
 function pageViewport(page: pdfjsLib.PDFPageProxy, zoom: number): PdfViewport {
+  pageIntrinsicRotations.set(page.pageNumber, page.rotate);
   return page.getViewport({ scale: zoom, rotation: (page.rotate + (pageViewRotations.get(page.pageNumber) ?? 0)) % 360 });
 }
 type ReadingSelection = { text: string; page: number; document: pdfjsLib.PDFDocumentProxy; context: ReadingContext };
@@ -377,13 +380,13 @@ interface SearchMatch {
   pageNum: number;
   index: number;
   length: number;
+  ocr: boolean;
 }
 
 let searchOpen = false;
 let searchQuery = "";
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 const pageTextCache = new Map<number, string>();
-const pageTextItemsCache = new Map<number, string[]>();
 let allMatches: SearchMatch[] = [];
 let currentMatchIndex = -1;
 
@@ -542,9 +545,9 @@ function requestFitToContent() {
 
   // Calculate required height:
   // All visible control rows + document padding + page + rounding buffer.
-  // Note: search bar is absolutely positioned over the document area, so excluded
+  // Nested OCR content is included in the zoom row, never counted twice.
   const toolbarHeight = toolbarEl.offsetHeight;
-  const extraControlsHeight = Array.from(mainEl.querySelectorAll<HTMLElement>(".zoom-bar, .selection-bar, .library-bar, .study-panel, .reader-widgets"))
+  const extraControlsHeight = Array.from(mainEl.querySelectorAll<HTMLElement>(".zoom-bar, .selection-bar, .library-bar, .study-panel, .reader-widgets, .search-bar"))
     .filter(row => getComputedStyle(row).position !== "absolute")
     .reduce((height, row) => height + row.offsetHeight, 0);
   const pageWrapperHeight = pageWrapperEl.offsetHeight;
@@ -572,158 +575,81 @@ function requestFitToContent() {
 
 // --- Search Functions ---
 
-function performSearch(query: string) {
+/** OCR search reads the panel cache directly; it never starts recognition. */
+function cachedOcr(pageNum: number) {
+  const nativeRotation = pageIntrinsicRotations.get(pageNum);
+  return nativeRotation === undefined ? undefined : ocrPanel.cachedPage(loadGeneration, pageNum,
+    (nativeRotation + (pageViewRotations.get(pageNum) ?? 0)) % 360);
+}
+function renderedTextIndex() {
+  if (renderedText?.generation !== loadGeneration || renderedText.page !== currentPage) return null;
+  return buildTextRangeIndex(ocrPanel.result() ? ocrPanel.layer : textLayerEl);
+}
+function pageSearchText(pageNum: number): string {
+  if (pageNum === currentPage) {
+    const index = renderedTextIndex();
+    if (index) return index.text;
+  }
+  return normalizeSearchText(cachedOcr(pageNum)?.searchText ?? pageTextCache.get(pageNum) ?? "");
+}
+function refreshSearchMatches(reset = false) {
+  const previous = reset ? undefined : allMatches[currentMatchIndex];
   allMatches = [];
-  currentMatchIndex = -1;
-  searchQuery = query;
-
-  if (!query) {
-    updateSearchUI();
-    clearHighlights();
-    return;
+  if (searchQuery) for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+    const text = pageSearchText(pageNum), ocr = Boolean(cachedOcr(pageNum));
+    for (const match of findTextMatches(text, searchQuery)) allMatches.push({ pageNum,
+      index: match.start, length: match.end - match.start, ocr });
   }
-
-  const lowerQuery = query.toLowerCase();
-  for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-    const pageText = pageTextCache.get(pageNum);
-    if (!pageText) continue;
-    const lowerText = pageText.toLowerCase();
-    let startIdx = 0;
-    while (true) {
-      const idx = lowerText.indexOf(lowerQuery, startIdx);
-      if (idx === -1) break;
-      allMatches.push({ pageNum, index: idx, length: query.length });
-      startIdx = idx + 1;
-    }
+  currentMatchIndex = previous ? allMatches.findIndex(match => match.pageNum === previous.pageNum && match.index === previous.index && match.length === previous.length) : -1;
+  if (currentMatchIndex < 0 && allMatches.length) {
+    const next = allMatches.findIndex(match => match.pageNum >= currentPage);
+    currentMatchIndex = next < 0 ? 0 : next;
   }
-
-  // Set current match to first match on or after current page
-  if (allMatches.length > 0) {
-    const idx = allMatches.findIndex((m) => m.pageNum >= currentPage);
-    currentMatchIndex = idx >= 0 ? idx : 0;
-  }
-
   updateSearchUI();
   renderHighlights();
-
-  // Navigate to match page if needed
-  if (allMatches.length > 0 && currentMatchIndex >= 0) {
-    const match = allMatches[currentMatchIndex];
-    if (match.pageNum !== currentPage) {
-      goToPage(match.pageNum);
-    }
-  }
-
-  // Update model context with search results
-  updatePageContext();
 }
-
-/**
- * Silent search: populate matches and report via model context
- * without opening the search bar or rendering highlights.
- */
+function performSearch(query: string) {
+  searchQuery = normalizeSearchText(query);
+  refreshSearchMatches(true);
+  const match = allMatches[currentMatchIndex];
+  if (match && match.pageNum !== currentPage) goToPage(match.pageNum);
+  void updatePageContext();
+}
+/** Find reports matches without opening the search bar. */
 function performSilentSearch(query: string) {
-  allMatches = [];
-  currentMatchIndex = -1;
-  searchQuery = query;
-
-  if (!query) {
-    updatePageContext();
-    return;
-  }
-
-  const lowerQuery = query.toLowerCase();
-  for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-    const pageText = pageTextCache.get(pageNum);
-    if (!pageText) continue;
-    const lowerText = pageText.toLowerCase();
-    let startIdx = 0;
-    while (true) {
-      const idx = lowerText.indexOf(lowerQuery, startIdx);
-      if (idx === -1) break;
-      allMatches.push({ pageNum, index: idx, length: query.length });
-      startIdx = idx + 1;
-    }
-  }
-
-  if (allMatches.length > 0) {
-    const idx = allMatches.findIndex((m) => m.pageNum >= currentPage);
-    currentMatchIndex = idx >= 0 ? idx : 0;
-  }
-
-  log.info(`Silent search "${query}": ${allMatches.length} matches`);
-  updatePageContext();
+  searchQuery = normalizeSearchText(query);
+  if (searchOpen) searchInputEl.value = query;
+  refreshSearchMatches(true);
+  void updatePageContext();
+}
+/** Range may include both a span box and its text box; paint each box once. */
+function uniqueRangeRects(range: Range): DOMRect[] {
+  const seen = new Set<string>();
+  return Array.from(range.getClientRects()).filter(rect => {
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    const key = [rect.left, rect.top, rect.width, rect.height].map(value => Math.round(value * 100)).join(":");
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
 }
 
 function renderHighlights() {
   clearHighlights();
-  if (!searchQuery || allMatches.length === 0) return;
-
-  const spans = Array.from(
-    textLayerEl.querySelectorAll("span"),
-  ) as HTMLElement[];
-  if (spans.length === 0) return;
-
-  const pageMatches = allMatches.filter((m) => m.pageNum === currentPage);
-  if (pageMatches.length === 0) return;
-
-  const lowerQuery = searchQuery.toLowerCase();
-  const lowerQueryLen = lowerQuery.length;
-
-  // Position highlight divs over matching text using Range API.
-  const wrapperEl = textLayerEl.parentElement!;
-  const wrapperRect = wrapperEl.getBoundingClientRect();
-
-  let domMatchOrdinal = 0;
-
-  for (const span of spans) {
-    const text = span.textContent || "";
-    if (text.length === 0) continue;
-    const lowerText = text.toLowerCase();
-    if (!lowerText.includes(lowerQuery)) continue;
-
-    // Find all match positions within this span
-    const matchPositions: number[] = [];
-    let pos = 0;
-    while (true) {
-      const idx = lowerText.indexOf(lowerQuery, pos);
-      if (idx === -1) break;
-      matchPositions.push(idx);
-      pos = idx + 1;
-    }
-    if (matchPositions.length === 0) continue;
-
-    const textNode = span.firstChild;
-    if (!textNode || textNode.nodeType !== Node.TEXT_NODE) continue;
-
-    for (const idx of matchPositions) {
-      const isCurrentMatch =
-        domMatchOrdinal < pageMatches.length &&
-        allMatches.indexOf(pageMatches[domMatchOrdinal]) === currentMatchIndex;
-
-      try {
-        const range = document.createRange();
-        range.setStart(textNode, idx);
-        range.setEnd(textNode, Math.min(idx + lowerQueryLen, text.length));
-        const rects = range.getClientRects();
-
-        for (let ri = 0; ri < rects.length; ri++) {
-          const r = rects[ri];
-          const div = document.createElement("div");
-          div.className =
-            "search-highlight" + (isCurrentMatch ? " current" : "");
-          div.style.position = "absolute";
-          div.style.left = `${r.left - wrapperRect.left}px`;
-          div.style.top = `${r.top - wrapperRect.top}px`;
-          div.style.width = `${r.width}px`;
-          div.style.height = `${r.height}px`;
-          highlightLayerEl.appendChild(div);
-        }
-      } catch {
-        // Range errors can happen with stale text nodes
-      }
-
-      domMatchOrdinal++;
+  if (!searchOpen || !searchQuery || !allMatches.length) return;
+  const index = renderedTextIndex();
+  if (!index) return;
+  const wrapperRect = pageWrapperEl.getBoundingClientRect();
+  const current = allMatches[currentMatchIndex];
+  for (const match of index.find(searchQuery)) {
+    const isCurrent = current?.pageNum === currentPage && current.index === match.start && current.length === match.end - match.start;
+    for (const rect of uniqueRangeRects(match.range)) {
+      const highlight = document.createElement("div");
+      highlight.className = "search-highlight" + (isCurrent ? " current" : "");
+      highlight.style.left = (rect.left - wrapperRect.left) + "px";
+      highlight.style.top = (rect.top - wrapperRect.top) + "px";
+      highlight.style.width = rect.width + "px";
+      highlight.style.height = rect.height + "px";
+      highlightLayerEl.append(highlight);
     }
   }
 
@@ -759,12 +685,13 @@ function clearHighlights() {
 function updateSearchUI() {
   const hasQuery = searchQuery.length > 0;
   const stillLoading = totalPages > 0 && pagesLoaded < totalPages;
-  const suffix = stillLoading ? " (loading\u2026)" : "";
+  const suffix = (stillLoading ? " (loading\u2026)" : "") + (allMatches.some(match => match.ocr) ? " · OCR" : "");
   if (allMatches.length === 0) {
     searchMatchCountEl.textContent = hasQuery ? `No matches${suffix}` : "";
   } else {
     searchMatchCountEl.textContent = `${currentMatchIndex + 1} of ${allMatches.length}${suffix}`;
   }
+  searchMatchCountEl.title = "搜索 PDF 文字层和本窗口已识别的页面；未识别的扫描页尚不可搜索。OCR 命中未经人工核对。";
   searchPrevBtn.disabled = allMatches.length === 0;
   searchNextBtn.disabled = allMatches.length === 0;
   // Hide nav controls when there's no query
@@ -782,6 +709,7 @@ function openSearch() {
   }
   searchOpen = true;
   searchBarEl.style.display = "flex";
+  requestFitToContent();
   updateSearchUI();
   searchInputEl.focus();
   if (panelState.open && annotationsPanelEl.classList.contains("floating")) {
@@ -791,9 +719,10 @@ function openSearch() {
 }
 
 function closeSearch() {
-  if (!searchOpen) return;
+  const wasOpen = searchOpen;
   searchOpen = false;
   searchBarEl.style.display = "none";
+  if (wasOpen) requestFitToContent();
   if (panelState.open && annotationsPanelEl.classList.contains("floating")) {
     applyFloatingPanelPosition();
   }
@@ -934,7 +863,7 @@ const ocrPanel = createOcrPanel(ocrContainer, ocrLayer, textLayerEl, callLibrary
     if (bytes.length > Math.ceil(8 * 1024 * 1024 / 3) * 4) throw new Error("本页图像过大，暂不能识别。");
     return bytes;
   } finally { signal.removeEventListener("abort", cancelRender); canvas.width = canvas.height = 0; }
-}, () => { ocrSummary.textContent = ocrPanel.result() ? "OCR 已就绪" : "文字识别"; clearReadingSelection(); studyPanel.refresh(); void updatePageContext(); });
+}, () => { ocrSummary.textContent = ocrPanel.result() ? "OCR 已就绪" : "文字识别"; clearReadingSelection(); refreshSearchMatches(); studyPanel.refresh(); void updatePageContext(); });
 const studyContainer = document.createElement("section");
 studyContainer.setAttribute("aria-label", "共读实践与笔记");
 libraryBar.after(studyContainer);
@@ -1285,7 +1214,12 @@ function formatSearchResults(): string {
   const displayed = allMatches.slice(0, MAX_RESULTS);
   for (let i = 0; i < displayed.length; i++) {
     const match = displayed[i];
-    const pageText = pageTextCache.get(match.pageNum) || "";
+    if (match.ocr) {
+      // Automatic context may report a hit, but must not transmit OCR excerpts.
+      lines.push('  [' + i + '] p.' + match.pageNum + ', offset ' + match.index + (i === currentIdx ? ' (current)' : '') + ': OCR hit, unverified; use get_text or an explicit selection to read it.');
+      continue;
+    }
+    const pageText = pageSearchText(match.pageNum);
     const start = Math.max(0, match.index - EXCERPT_RADIUS);
     const end = Math.min(
       pageText.length,
@@ -1322,7 +1256,7 @@ async function updatePageContext() {
   try {
     if (capturedContext.textSource?.kind === "ocr") {
       await host.updateContext({ content: [{ type: "text", text: "当前 PDF 页已在本机 OCR 识别。识别内容尚未随自动上下文发送；用户可划选后解释、提问或记笔记，也可显式调用读取工具。" }],
-        structuredContent: { readingContext: { ...capturedContext, selection: null } } },
+        structuredContent: { readingContext: { ...capturedContext, selection: null }, ...(searchQuery ? { search: { query: searchQuery, matches: allMatches.slice(0, 20), total: allMatches.length } } : {}) } },
         () => revision === contextRevision && document === pdfDocument && pageNumber === currentPage);
       return;
     }
@@ -1376,9 +1310,9 @@ async function updatePageContext() {
 
     // Include search status if active
     let searchSection = "";
-    if (searchOpen && searchQuery && allMatches.length > 0) {
+    if (searchQuery && allMatches.length > 0) {
       searchSection = formatSearchResults();
-    } else if (searchOpen && searchQuery) {
+    } else if (searchQuery) {
       searchSection = `\nSearch: "${searchQuery}" (no matches found)`;
     }
 
@@ -2613,116 +2547,27 @@ function removeAnnotation(id: string, skipUndo = false): void {
 // =============================================================================
 
 function handleHighlightText(cmd: {
-  id: string;
-  query: string;
-  page?: number;
-  color?: string;
-  content?: string;
+  id: string; query: string; page?: number; color?: string; content?: string;
 }): void {
-  const pagesToSearch: number[] = [];
-  if (cmd.page) {
-    pagesToSearch.push(cmd.page);
-  } else {
-    // Search all pages that have cached text
-    for (const [pageNum, text] of pageTextCache) {
-      if (text.toLowerCase().includes(cmd.query.toLowerCase())) {
-        pagesToSearch.push(pageNum);
-      }
-    }
+  const page = cmd.page ?? currentPage;
+  const rects = findTextRects(cmd.query, page);
+  if (!rects.length) {
+    selectionStatusEl.textContent = "未定位到可高亮文字，请先打开目标页；扫描页需先识别文字。";
+    return;
   }
-
-  let annotationIndex = 0;
-  for (const pageNum of pagesToSearch) {
-    // Find text positions using the text layer DOM if on current page,
-    // otherwise create approximate rects from text cache positions
-    const rects = findTextRects(cmd.query, pageNum);
-    if (rects.length > 0) {
-      const id =
-        pagesToSearch.length > 1
-          ? `${cmd.id}_p${pageNum}_${annotationIndex++}`
-          : cmd.id;
-      addAnnotation({
-        type: "highlight",
-        id,
-        page: pageNum,
-        rects,
-        color: cmd.color,
-        content: cmd.content,
-      });
-    }
-  }
+  addAnnotation({ type: "highlight", id: cmd.id, page, rects, color: cmd.color, content: cmd.content });
 }
-
-/**
- * Find text in a page and return PDF-coordinate rects.
- * Uses the TextLayer DOM when the page is currently rendered,
- * otherwise falls back to approximate character-based positioning.
- */
+/** Use exact live geometry; cached text alone never supplies annotation boxes. */
 function findTextRects(query: string, pageNum: number): Rect[] {
-  if (pageNum !== currentPage) {
-    // For non-current pages, create approximate rects from page dimensions
-    // The text will be properly positioned when the user navigates to that page
-    return findTextRectsFromCache(query, pageNum);
-  }
-
-  // Use text layer DOM for current page
-  const spans = Array.from(
-    textLayerEl.querySelectorAll("span"),
-  ) as HTMLElement[];
-  if (spans.length === 0) return findTextRectsFromCache(query, pageNum);
-
-  const lowerQuery = query.toLowerCase();
-  const rects: Rect[] = [];
-  const wrapperEl = textLayerEl.parentElement!;
-  const wrapperRect = wrapperEl.getBoundingClientRect();
-
-  for (const span of spans) {
-    const text = span.textContent || "";
-    if (text.length === 0) continue;
-    const lowerText = text.toLowerCase();
-
-    let pos = 0;
-    while (true) {
-      const idx = lowerText.indexOf(lowerQuery, pos);
-      if (idx === -1) break;
-      pos = idx + 1;
-
-      const textNode = span.firstChild;
-      if (!textNode || textNode.nodeType !== Node.TEXT_NODE) continue;
-
-      try {
-        const range = document.createRange();
-        range.setStart(textNode, idx);
-        range.setEnd(textNode, Math.min(idx + lowerQuery.length, text.length));
-        const clientRects = range.getClientRects();
-
-        for (let ri = 0; ri < clientRects.length; ri++) {
-          const r = clientRects[ri];
-          if (renderedViewport) rects.push(screenRectToPdf({ x: r.left - wrapperRect.left, y: r.top - wrapperRect.top,
-            width: r.width, height: r.height }, renderedViewport));
-        }
-      } catch {
-        // Range API errors with stale nodes
-      }
-    }
-  }
-
-  return rects;
+  if (pageNum !== currentPage || !renderedViewport) return [];
+  const index = renderedTextIndex();
+  if (!index) return [];
+  const wrapper = pageWrapperEl.getBoundingClientRect();
+  return index.find(query).flatMap(match => uniqueRangeRects(match.range).map(rect => screenRectToPdf({
+    x: rect.left - wrapper.left, y: rect.top - wrapper.top, width: rect.width, height: rect.height,
+  }, renderedViewport!)));
 }
 
-function findTextRectsFromCache(query: string, pageNum: number): Rect[] {
-  const text = pageTextCache.get(pageNum);
-  if (!text) return [];
-  const lowerText = text.toLowerCase();
-  const lowerQuery = query.toLowerCase();
-  const idx = lowerText.indexOf(lowerQuery);
-  if (idx === -1) return [];
-
-  // Text exists in the cache but the text-layer DOM for this page isn't
-  // rendered yet — we can't compute accurate rects. Returning a placeholder
-  // would persist wrong coordinates; return empty and let the caller skip.
-  return [];
-}
 
 // =============================================================================
 // get_pages — Offscreen rendering for model analysis
@@ -2877,9 +2722,8 @@ async function collectPageData(
         try {
           const pg = await pdfDocument.getPage(pageNum);
           const tc = await pg.getTextContent();
-          text = (tc.items as Array<{ str?: string }>)
-            .map((item) => item.str || "")
-            .join(" ");
+          pageIntrinsicRotations.set(pageNum, pg.rotate);
+          text = normalizeSearchText(tc.items.map(item => "str" in item ? item.str + (item.hasEOL ? "\n" : "") : "").join(""));
           pageTextCache.set(pageNum, text);
         } catch (err) {
           log.error(
@@ -3542,6 +3386,7 @@ let finishRender: (() => void) | undefined;
 async function renderPage() {
   if (!pdfDocument) return;
   renderedText = null;
+  clearHighlights();
   ocrPanel.invalidate();
   clearReadingSelection();
 
@@ -3670,14 +3515,8 @@ async function renderPage() {
       canvasContainerEl.scrollLeft = 0; pageLanding = null;
     }
 
-    // Cache page text items if not already cached
-    if (!pageTextItemsCache.has(pageToRender)) {
-      const items = (textContent.items as Array<{ str?: string }>).map(
-        (item) => item.str || "",
-      );
-      pageTextItemsCache.set(pageToRender, items);
-      pageTextCache.set(pageToRender, items.join(""));
-    }
+    // Keep search offsets aligned with the actual rendered text nodes.
+    pageTextCache.set(pageToRender, buildTextRangeIndex(textLayerEl).text);
 
     // Size overlay layers to match canvas
     highlightLayerEl.style.width = `${viewport.width}px`;
@@ -3805,10 +3644,8 @@ async function renderPage() {
       log.info("Form layer render skipped:", formErr);
     }
 
-    // Re-render search highlights if search is active
-    if (searchOpen && searchQuery) {
-      renderHighlights();
-    }
+    // Source/rotation changes may add or remove OCR matches.
+    if (searchQuery) refreshSearchMatches();
 
     // Re-render annotations for current page
     renderAnnotationsForPage(pageToRender);
@@ -4829,7 +4666,7 @@ async function fetchRange(
  * Preserves currentPage (clamped). Does not stop/restart the poll loop.
  */
 async function reloadPdf(): Promise<void> {
-  pageViewRotations.clear();
+  pageViewRotations.clear(); pageIntrinsicRotations.clear();
   ocrPanel.invalidate(true);
   clearReadingSelection();
   readerNavigation.clear();
@@ -4866,7 +4703,6 @@ async function reloadPdf(): Promise<void> {
   restoredRemovedIds.clear();
   pdfBaselineFormValues.clear();
   pageTextCache.clear();
-  pageTextItemsCache.clear();
   allMatches = [];
   currentMatchIndex = -1;
   focusedFieldName = null;
@@ -5025,11 +4861,11 @@ let preloadSearchTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Schedule a debounced search refresh while preloading */
 function scheduleSearchRefresh() {
-  if (!searchOpen || !searchQuery) return;
+  if (!searchQuery) return;
   if (preloadSearchTimer) return; // already scheduled
   preloadSearchTimer = setTimeout(() => {
     preloadSearchTimer = null;
-    if (searchOpen && searchQuery) performSearch(searchQuery);
+    if (searchQuery) { refreshSearchMatches(); void updatePageContext(); }
   }, 500);
 }
 
@@ -5059,11 +4895,8 @@ async function startPreloading() {
       const page = await pdfDocument.getPage(i);
       const textContent = await page.getTextContent();
       if (gen !== loadGeneration) return;
-      const items = (textContent.items as Array<{ str?: string }>).map(
-        (item) => item.str || "",
-      );
-      pageTextItemsCache.set(i, items);
-      pageTextCache.set(i, items.join(""));
+      pageIntrinsicRotations.set(i, page.rotate);
+      pageTextCache.set(i, normalizeSearchText(textContent.items.map(item => "str" in item ? item.str + (item.hasEOL ? "\n" : "") : "").join("")));
       pagesLoaded++;
       updateLoadingIndicator();
       scheduleSearchRefresh();
@@ -5077,7 +4910,7 @@ async function startPreloading() {
   log.info("Background preload complete:", pagesLoaded, "pages loaded");
   finalizeLoadingIndicator();
   // Final search update
-  if (searchOpen && searchQuery) performSearch(searchQuery);
+  if (searchQuery) { refreshSearchMatches(); void updatePageContext(); }
 }
 
 // Serialize document changes: a late result must not attach state to another PDF.
@@ -5098,7 +4931,7 @@ async function handleReaderResult(result: CallToolResult) {
   await commandWork.catch(() => {}); // The poll loop already reports command failures.
   loadGeneration++;
   ocrPanel.invalidate(true); readerWidgets.setProgress(null); pageLanding = "top";
-  pageViewRotations.clear(); renderedRotation = 0;
+  pageViewRotations.clear(); pageIntrinsicRotations.clear(); renderedRotation = 0;
   if (pdfDocument) persistAnnotations();
   currentRenderTask?.cancel();
   await renderFinished;
@@ -5111,7 +4944,7 @@ async function handleReaderResult(result: CallToolResult) {
   annotationMap.clear(); formFieldValues.clear(); imageCache.clear(); selectedAnnotationIds.clear();
   undoStack.length = 0; redoStack.length = 0; pdfBaselineAnnotations = [];
   baselineScannedPages.clear(); restoredRemovedIds.clear(); pdfBaselineFormValues.clear();
-  pageTextCache.clear(); pageTextItemsCache.clear(); allMatches = []; currentMatchIndex = -1;
+  pageTextCache.clear(); allMatches = []; currentMatchIndex = -1;
   focusedFieldName = null; fieldNameToIds.clear(); fieldNameToPage.clear(); radioButtonValues.clear();
   fieldNameToLabel.clear(); fieldNameToOrder.clear(); cachedFieldObjects = null;
   saveBtnEverShown = false; lastSavedMtime = null; isDirty = false;
@@ -5214,8 +5047,7 @@ async function handleReaderResult(result: CallToolResult) {
     pagesLoaded = 0;
     preloadErrors = [];
     pageTextCache.clear();
-    pageTextItemsCache.clear();
-    loadingIndicatorEl.classList.remove("error");
+      loadingIndicatorEl.classList.remove("error");
     loadingIndicatorEl.style.opacity = "";
     loadingIndicatorEl.style.display = "none";
 
@@ -5975,7 +5807,7 @@ app.registerTool(
   {
     title: "Highlight Text",
     description:
-      "Auto-locate text and add a highlight annotation. Searches the document (or a specific page) and highlights the first match.",
+      "Highlight matching text on the currently rendered page, including OCR text already recognized in this window. All matching occurrences on that page are highlighted. Navigate to another page first; text caches alone cannot supply geometry.",
     inputSchema: z.object({
       query: z.string().describe("Text to locate and highlight"),
       page: z
@@ -5990,10 +5822,9 @@ app.registerTool(
   },
   async ({ query, page, color, content }) => {
     const id = `ht_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    return runCommand(
-      { type: "highlight_text", id, query, page, color, content },
-      `Highlighted "${query}"${page ? ` on page ${page}` : ""} (id: ${id})`,
-    );
+    const result = await runCommand({ type: "highlight_text", id, query, page, color, content },
+      `Highlighted "${query}" on page ${page ?? currentPage} (id: ${id})`);
+    return result.isError || annotationMap.has(id) ? result : { isError: true, content: [{ type: "text", text: "No exact text geometry found. Open the target page first, and recognize scanned text if needed." }] };
   },
 );
 

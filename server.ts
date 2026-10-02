@@ -2518,7 +2518,7 @@ Annotation types:
 • stamp: x, y, label (any text, e.g. APPROVED, DRAFT, CONFIDENTIAL), color?, rotation?
 • image: imageUrl (required), x?, y?, width?, height?, mimeType?, rotation?, aspect? — places an image (signature, logo, etc.) on the page. Pass a local file path or HTTPS URL (NO data: URIs, NO base64). Width/height auto-detected if omitted. Users can also drag & drop images directly onto the viewer.
 
-TIP: For text annotations, prefer highlight_text (auto-finds text) over manual rects.
+TIP: For text annotations on the currently rendered page, prefer highlight_text over manual rects. Navigate to another page first; cached text alone cannot supply annotation geometry.
 
 Example — add a signature image and a stamp, then screenshot to verify:
 \`\`\`json
@@ -2531,10 +2531,11 @@ Example — add a signature image and a stamp, then screenshot to verify:
 ]}
 \`\`\`
 
-• highlight_text: auto-find and highlight text (query, page?, color?, content?)
+• highlight_text: highlight all matching occurrences on the currently rendered page, including OCR already recognized in that window (query, page?, color?, content?). Unrendered pages are not annotated.
 • update_annotations: partial update (id+type required) • remove_annotations: remove by ids
 
 **NAVIGATION**: navigate (page), search (query), find (query, silent), search_navigate (matchIndex), zoom (scale 0.5–3.0)
+Text search covers extracted PDF text and OCR pages already recognized and still cached in this viewer. It does not automatically recognize other scanned pages. OCR search metadata is unverified; use get_text to explicitly read page content.
 
 **DISPLAY**: display_mode requires \`mode\`: \`fullscreen\` or \`inline\`. In Codex, fullscreen opens this complete PDF reader in the right panel, preserving its chapter outline and selection tools; inline returns it to the conversation. For a sidebar reading request, use \`interact\` with display_mode/fullscreen, not \`open_in_codex\` with a PDF file (that opens a different preview without this reader's outline). Success is returned only after the viewer confirms the actual display mode.
 

@@ -129,13 +129,14 @@
           <span id="selection-status" role="status" aria-live="polite">选中原文，向小吉提问</span>
           <button id="explain-selection-btn" class="reader-action reader-primary" disabled>解释选中内容</button>
         </div>
-        <!-- Search bar below toolbar, right-aligned -->
+        <!-- Search stays in flow so it cannot cover page or OCR controls. -->
         <div id="search-bar" class="search-bar" style="display: none">
           <input
             id="search-input"
             class="search-input"
             type="text"
-            placeholder="Search..."
+            placeholder="搜索文字或已识别页"
+            aria-label="搜索 PDF 文字层和已识别页"
             autocomplete="off"
           />
           <span id="search-match-count" class="search-match-count"></span>
