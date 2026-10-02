@@ -63,6 +63,7 @@ import { registerArxivTools } from "./arxiv-tools.js";
 import type { GitHubService } from "./github.js";
 import { registerGithubTools } from "./github-tools.js";
 import { LocalLibrary, registerLocalLibraryTools } from "./local-library.js";
+import { registerOcrTools } from "./ocr-tools.js";
 
 // =============================================================================
 // Configuration
@@ -1330,6 +1331,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   if (options.arxiv) registerArxivTools(server, options.arxiv);
   if (options.github) registerGithubTools(server, options.github);
   if (library) registerLocalLibraryTools(server, new LocalLibrary(options.localLibraryDirectories ?? [], library));
+
+  registerOcrTools(server);
 
   // Tool: list_pdfs - List available PDFs
   server.registerTool(
