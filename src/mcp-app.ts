@@ -4136,17 +4136,16 @@ searchInputEl.addEventListener("keydown", (e) => {
   }
 });
 
-pageInputEl.addEventListener("change", () => {
-  const page = parseInt(pageInputEl.value, 10);
-  if (!isNaN(page)) {
-    goToPage(page);
-  } else {
-    pageInputEl.value = String(currentPage);
-  }
-});
-
+function commitPageInput() {
+  const page = pageInputEl.valueAsNumber;
+  if (Number.isInteger(page)) goToPage(page);
+  else pageInputEl.value = String(currentPage);
+}
+pageInputEl.addEventListener("change", commitPageInput);
 pageInputEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
+    e.preventDefault();
+    commitPageInput();
     pageInputEl.blur();
   }
 });
@@ -5161,6 +5160,7 @@ async function handleReaderResult(result: CallToolResult) {
     loadingIndicatorEl.style.opacity = "";
     loadingIndicatorEl.style.display = "none";
 
+    updateControls();
     showViewer();
     downloadBtn.style.display = host.getHostCapabilities()?.downloadFile
       ? ""
