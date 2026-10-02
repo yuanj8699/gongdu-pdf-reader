@@ -50,3 +50,82 @@
   #repository-navigation { position: absolute; inset: 0 auto 0 0; width: min(var(--reader-navigation-width), 85%); z-index: var(--reader-overlay-layer); }
   #reading-workspace.navigation-open #reader-stage { pointer-events: none; }
 }
+
+/* Quiet palettes tint the reader chrome; document pixels retain their source colors. */
+:root[data-reader-palette="sakura"] {
+  --bg000: light-dark(#fffdfd, #241d21);
+  --bg100: light-dark(#faf3f5, #30272b);
+  --bg200: light-dark(#e7d4da, #47373e);
+  --bg300: light-dark(#c5a2af, #70535f);
+  --text000: light-dark(#35212a, #f5e9ed);
+  --text100: light-dark(#79535f, #c6afb7);
+  --text200: var(--text100);
+  --reader-accent: light-dark(#984361, #edabc2);
+  --reader-accent-hover: light-dark(#7b304b, #f3c4d4);
+  --reader-on-accent: light-dark(#ffffff, #351c26);
+  --selection-bg: light-dark(#c85f8a40, #edabc240);
+}
+:root[data-reader-palette="sky"] {
+  --bg000: light-dark(#fcfdff, #1b222b);
+  --bg100: light-dark(#f0f5fa, #242e3a);
+  --bg200: light-dark(#d4e0eb, #354657);
+  --bg300: light-dark(#a5bbcd, #526d87);
+  --text000: light-dark(#1c3248, #e9f0f8);
+  --text100: light-dark(#506a82, #afc2d5);
+  --text200: var(--text100);
+  --reader-accent: light-dark(#286291, #91c7ef);
+  --reader-accent-hover: light-dark(#1c4d75, #b9dcf6);
+  --reader-on-accent: light-dark(#ffffff, #172e43);
+  --selection-bg: light-dark(#4b91ca40, #91c7ef40);
+}
+:root[data-reader-palette="matcha"] {
+  --bg000: light-dark(#fcfefb, #1e241d);
+  --bg100: light-dark(#f0f5ee, #293027);
+  --bg200: light-dark(#d5e1ce, #3c4b35);
+  --bg300: light-dark(#abbfa0, #607153);
+  --text000: light-dark(#2d3824, #eaf1e4);
+  --text100: light-dark(#596e4b, #b5c6a6);
+  --text200: var(--text100);
+  --reader-accent: light-dark(#4b6937, #b0d194);
+  --reader-accent-hover: light-dark(#3a5329, #c6e2af);
+  --reader-on-accent: light-dark(#ffffff, #223019);
+  --selection-bg: light-dark(#759e5240, #b0d19440);
+}
+:root[data-reader-palette="cocoa"] {
+  --bg000: light-dark(#fefdfc, #26211f);
+  --bg100: light-dark(#f5f2ef, #322c28);
+  --bg200: light-dark(#e1d7d0, #4b3f37);
+  --bg300: light-dark(#bfaa9a, #766050);
+  --text000: light-dark(#3b2a1f, #f2ebe5);
+  --text100: light-dark(#78604e, #ccb6a5);
+  --text200: var(--text100);
+  --reader-accent: light-dark(#875635, #deb58e);
+  --reader-accent-hover: light-dark(#6d4227, #ebcbaa);
+  --reader-on-accent: light-dark(#ffffff, #352419);
+  --selection-bg: light-dark(#ac784a40, #deb58e40);
+}
+.reader-settings { min-width: 0; }
+.reader-settings[open] { flex-basis: 100%; }
+.reader-settings summary { min-height: 36px; align-content: center; width: fit-content; }
+.reader-settings summary:focus-visible, .reader-settings select:focus-visible, .reader-settings input:focus-visible { outline: 2px solid var(--reader-accent); outline-offset: 2px; }
+.reader-settings-controls { display: flex; flex-direction: column; gap: .75rem; padding: .5rem 0 .75rem; max-height: 45dvh; overflow-y: auto; }
+.reader-settings-row { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem 1rem; }
+.reader-settings select { min-height: 36px; max-width: 100%; }
+.reader-settings fieldset { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem .5rem; border: 0; padding: 0; margin: 0; min-width: 0; }
+.reader-settings legend { float: left; padding: .4rem .6rem .4rem 0; font-size: .8rem; }
+.reader-settings input { accent-color: var(--reader-accent); }
+.reader-palette-options label { padding: .35rem .5rem; border: 1px solid var(--bg200); border-radius: var(--reader-radius); cursor: pointer; min-height: 36px; box-sizing: border-box; }
+.reader-palette-options label:hover { background: var(--bg100); }
+.reader-palette-options label:has(input:checked) { border-color: var(--reader-accent); background: var(--bg100); }
+.reader-palette-options input { margin: 0; }
+.reader-palette-swatch { width: .7rem; height: .7rem; border-radius: 50%; background: #235c4a; flex: none; }
+.reader-palette-swatch[data-palette="sakura"] { background: #984361; }
+.reader-palette-swatch[data-palette="sky"] { background: #286291; }
+.reader-palette-swatch[data-palette="matcha"] { background: #4b6937; }
+.reader-palette-swatch[data-palette="cocoa"] { background: #875635; }
+.reader-widget-options label { min-height: 36px; padding-right: .75rem; cursor: pointer; }
+.reader-settings-hint, #reader-settings-status { margin: 0; color: var(--text100); font-size: .75rem; line-height: 1.5; }
+#reader-settings-status:empty { display: none; }
+@media (pointer: coarse) {
+  .reader-settings summary, .reader-settings select, .reader-palette-options label, .reader-widget-options label { min-height: 44px; }
+}
