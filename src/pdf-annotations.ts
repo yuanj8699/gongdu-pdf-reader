@@ -173,27 +173,67 @@ export type PdfAnnotationDef =
 // Coordinate Conversion (model ↔ internal PDF coords)
 // =============================================================================
 
-/**
- * Convert annotation coordinates from model space (top-left origin, Y↓)
- * to internal PDF space (bottom-left origin, Y↑).
- *
- * Call this when receiving coordinates from the model via add/update_annotations.
- */
-export function convertFromModelCoords(
-  def: PdfAnnotationDef,
-  pageHeight: number,
-): PdfAnnotationDef {
+/** The point conversion subset of PDF.js PageViewport. Pass a scale=1 viewport
+ * for model page coordinates; its methods also account for CropBox and UserUnit.
+ * Width/height-only objects cannot describe page rotation or a crop offset. */
+export interface AnnotationCoordinateViewport {
+  convertToViewportPoint(x: number, y: number): readonly number[];
+  convertToPdfPoint(x: number, y: number): readonly number[];
+}
+
+type CoordinatePoint = (x: number, y: number) => readonly number[];
+
+/** Transform all corners, because a quarter turn swaps the rectangle axes.
+ * PDF.js page rotations are orthogonal; arbitrary skew/rotation is not an
+ * exact rectangle round trip and is outside this coordinate contract. */
+function mapCoordinateRect(rect: Rect, point: CoordinatePoint): Rect {
+  const corners = [
+    point(rect.x, rect.y),
+    point(rect.x + rect.width, rect.y),
+    point(rect.x, rect.y + rect.height),
+    point(rect.x + rect.width, rect.y + rect.height),
+  ];
+  const xs = corners.map(p => p[0]), ys = corners.map(p => p[1]);
+  const x = Math.min(...xs), y = Math.min(...ys);
+  return { ...rect, x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
+}
+
+/** Only placement coordinates are transformed. An annotation's intrinsic
+ * rotation stays relative to the unrotated PDF page; the page viewport adds
+ * its own rotation when displayed. In particular, the rect/image width and
+ * height below describe the placement box, not a rewritten appearance stream
+ * or a conversion of a model-specified absolute visual angle. */
+function mapAnnotationCoordinates(def: PdfAnnotationDef, point: CoordinatePoint): PdfAnnotationDef {
   switch (def.type) {
     case "highlight":
     case "underline":
     case "strikethrough":
-      return {
-        ...def,
-        rects: def.rects.map((r) => ({
-          ...r,
-          y: pageHeight - r.y - r.height,
-        })),
-      };
+      return { ...def, rects: def.rects.map(rect => mapCoordinateRect(rect, point)) };
+    case "note":
+    case "freetext":
+    case "stamp": {
+      const [x, y] = point(def.x, def.y);
+      return { ...def, x, y };
+    }
+    case "rectangle":
+    case "circle":
+    case "image":
+    case "imported":
+      return { ...def, ...mapCoordinateRect(def, point) };
+    case "line": {
+      const [x1, y1] = point(def.x1, def.y1), [x2, y2] = point(def.x2, def.y2);
+      return { ...def, x1, y1, x2, y2 };
+    }
+  }
+}
+
+/** Legacy height-only conversion for existing zero-origin, unrotated callers. */
+function flipLegacyCoordinates(def: PdfAnnotationDef, pageHeight: number): PdfAnnotationDef {
+  switch (def.type) {
+    case "highlight":
+    case "underline":
+    case "strikethrough":
+      return { ...def, rects: def.rects.map(r => ({ ...r, y: pageHeight - r.y - r.height })) };
     case "note":
     case "freetext":
     case "stamp":
@@ -204,26 +244,30 @@ export function convertFromModelCoords(
     case "imported":
       return { ...def, y: pageHeight - def.y - def.height };
     case "line":
-      return {
-        ...def,
-        y1: pageHeight - def.y1,
-        y2: pageHeight - def.y2,
-      };
+      return { ...def, y1: pageHeight - def.y1, y2: pageHeight - def.y2 };
   }
 }
 
-/**
- * Convert annotation coordinates from internal PDF space (bottom-left origin, Y↑)
- * to model space (top-left origin, Y↓).
- *
- * Call this when presenting coordinates to the model (e.g. in context strings).
- */
+/** Convert model page coordinates (viewport top-left, Y down) into PDF user
+ * coordinates. Real-page callers must provide its scale=1 PageViewport.
+ * A number retains the legacy height-only flip for existing callers. */
+export function convertFromModelCoords(
+  def: PdfAnnotationDef,
+  page: number | AnnotationCoordinateViewport,
+): PdfAnnotationDef {
+  return typeof page === "number" ? flipLegacyCoordinates(def, page)
+    : mapAnnotationCoordinates(def, (x, y) => page.convertToPdfPoint(x, y));
+}
+
+/** Convert PDF user coordinates into model page coordinates. This is the
+ * inverse of convertFromModelCoords with the SAME orthogonal page viewport;
+ * a rotated/cropped page is not converted by calling the same Y flip twice. */
 export function convertToModelCoords(
   def: PdfAnnotationDef,
-  pageHeight: number,
+  page: number | AnnotationCoordinateViewport,
 ): PdfAnnotationDef {
-  // The conversion is its own inverse (same formula flips both ways)
-  return convertFromModelCoords(def, pageHeight);
+  return typeof page === "number" ? flipLegacyCoordinates(def, page)
+    : mapAnnotationCoordinates(def, (x, y) => page.convertToViewportPoint(x, y));
 }
 
 // =============================================================================
