@@ -12,3 +12,11 @@
 /* A selection must not move the text being dragged. In focus mode the action
    floats over the page instead of adding a new row to the reading layout. */
 .focus-reading .selection-bar { position: absolute; inset: auto .5rem .5rem; z-index: 10; border: 1px solid var(--bg300); border-radius: var(--reader-radius); box-shadow: 0 2px 8px var(--shadow-page-color); }
+
+/* Actions share the existing notes disclosure; selecting text never opens it. */
+.study-panel #study-history { margin-top: 0; }
+#study-history > summary { min-height: 30px; align-content: center; }
+#study-history > summary:focus-visible { outline: 2px solid var(--reader-accent); outline-offset: 2px; }
+#study-history .study-actions { margin-block: .5rem .75rem; }
+#study-status { overflow-wrap: anywhere; }
+@media (pointer: coarse) { #study-history > summary { min-height: 44px; } }

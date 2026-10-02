@@ -17,13 +17,17 @@ const actions = {
 export function createStudyPanel(container: HTMLElement, host: HostBridge, getContext: () => StudyContext | null, resume: (context: StudyContext) => Promise<void>) {
   const key = "gongdu:study-records:v1";
   container.className = "study-panel";
-  container.innerHTML = `<div class="study-actions" aria-label="把原文带入实践"><span id="study-selection">选中原文后可查源码、做实验或记笔记</span></div>
-    <p id="study-status" role="status" aria-live="polite"></p><details id="study-history"><summary>学习记录</summary>
+  container.innerHTML = `<p id="study-status" role="status" aria-live="polite"></p><details id="study-history"><summary>学习与笔记</summary>
+    <div class="study-actions" aria-label="把原文带入实践"><span id="study-selection">选中原文后可查源码、做实验或记笔记</span></div>
     <p class="library-note">先写下自己的理解，再请 AI 检验。笔记保存在当前客户端本机；请点击保存，可导出 Markdown 留存。</p><div class="study-filters"><label>记录范围<select id="study-scope"><option value="current">当前资料</option><option value="all">全部资料</option></select></label><input id="study-search" type="search" aria-label="搜索读书笔记" placeholder="搜索原文或笔记"><button id="study-export" type="button">导出笔记</button></div><ul id="study-entries"></ul></details>`;
   const toolbar = container.querySelector<HTMLElement>(".study-actions")!;
   const status = container.querySelector<HTMLElement>("#study-status")!;
   const list = container.querySelector<HTMLElement>("#study-entries")!;
   const history = container.querySelector<HTMLDetailsElement>("#study-history")!;
+  // Keep the source selection when the reader opens actions with the mouse.
+  history.querySelector("summary")!.addEventListener("pointerdown", event => {
+    if (event.button === 0) event.preventDefault();
+  });
   const scope = container.querySelector<HTMLSelectElement>("#study-scope")!;
   const search = container.querySelector<HTMLInputElement>("#study-search")!;
   const exportButton = container.querySelector<HTMLButtonElement>("#study-export")!;
@@ -72,13 +76,16 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
     return entries.filter(entry => (scope.value === "all" || entry.context.identity.kind === "library" && entry.context.identity.assetId === activeAsset)
       && (!term || [entry.context.title, entry.context.selection?.text ?? "", entry.note].join(" ").toLocaleLowerCase().includes(term)));
   }
-  function showEntryStatus(id: string, text: string) { const state = states.get(id); if (state) state.textContent = text; }
+  function showEntryStatus(id: string, text: string, announceWhenCollapsed = false) {
+    const state = states.get(id); if (state) state.textContent = text;
+    if (announceWhenCollapsed && !history.open) status.textContent = text;
+  }
   function render() {
     list.replaceChildren();
     states.clear();
     const visible = filteredEntries();
     visibleIds = new Set(visible.map(entry => entry.id));
-    history.querySelector("summary")!.textContent = `学习记录（${visible.length}）`;
+    history.querySelector("summary")!.textContent = `学习与笔记（${visible.length}）`;
     exportButton.disabled = !visible.length;
     if (!visible.length) { list.textContent = entries.length ? "当前范围没有匹配记录，可切换全部资料或清除搜索。" : "选一段原文或直接记本页笔记，下次从这里返回。"; return; }
     for (const entry of [...visible].reverse()) {
@@ -105,17 +112,17 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
         change(updated);
         try {
           await persist(updated);
-          showEntryStatus(entry.id, pending.has(entry.id) ? "仍有新修改尚未保存" : "笔记已保存到本机");
+          showEntryStatus(entry.id, pending.has(entry.id) ? "仍有新修改尚未保存" : "笔记已保存到本机", true);
           if (unsavedReceiptId === entry.id && !pending.has(entry.id)) { status.textContent = updated.status; unsavedReceiptId = null; }
         }
-        catch (error) { showEntryStatus(entry.id, `笔记未保存：${message(error)}`); }
+        catch (error) { showEntryStatus(entry.id, `笔记未保存：${message(error)}`, true); }
         finally { save.disabled = false; }
       });
       const back = document.createElement("button"); back.type = "button"; back.textContent = "返回原文";
       back.addEventListener("click", async () => {
         back.disabled = true;
         try { await resume(entry.context); history.open = false; status.textContent = `已返回 ${entry.context.title} · ${position(entry.context)}。选区原文保留在记录中。`; }
-        catch (error) { state.textContent = `返回失败：${message(error)}`; }
+        catch (error) { showEntryStatus(entry.id, `返回失败：${message(error)}`, true); }
         finally { back.disabled = false; }
       });
       const review = document.createElement("button"); review.type = "button"; review.textContent = "检验我的理解";
@@ -154,7 +161,7 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
     search.value = "";
     if (activeAsset !== context.identity.assetId) scope.value = "all";
     render();
-    if (action === "note") { sending = false; refresh(); history.open = true; list.querySelector("textarea")?.focus(); return; }
+    if (action === "note") { sending = false; refresh(); if (history.open) list.querySelector("textarea")?.focus(); return; }
     status.textContent = "正在发送" + actions[action].label + "请求…";
     try {
       await host.ask(entry.context, actions[action].prompt + (action === "review" ? "\n" + JSON.stringify(note) : ""));
