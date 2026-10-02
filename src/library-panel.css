@@ -73,3 +73,18 @@
 .hljs-string, .hljs-title { color: var(--reader-syntax-string); }
 .hljs-number, .hljs-literal { color: var(--reader-syntax-number); }
 .hljs-comment { color: var(--text100); }
+
+.library-find { display: flex; flex-wrap: wrap; align-items: end; gap: .7rem; margin-top: 1rem; }
+.library-find label { display: grid; gap: .4rem; color: var(--text100); font-size: .8rem; }
+.library-find label:first-child { flex: 1 1 200px; }
+.library-find input, .library-find select { min-width: 0; width: 100%; padding: .55rem; color: var(--text000); background: var(--bg000); border: 1px solid var(--bg300); border-radius: .4rem; font: inherit; }
+.library-find select:focus-visible { outline: 2px solid var(--text000); outline-offset: 3px; }
+.library-panel.library-drag-over .library-import { border-color: var(--reader-accent, var(--text000)); background: var(--bg100); outline: 2px solid var(--reader-accent, var(--text000)); outline-offset: 2px; }
+#library-upload-queue { list-style: none; padding: 0; display: grid; gap: .5rem; max-height: 280px; overflow: auto; overscroll-behavior: contain; }
+#library-upload-queue[hidden] { display: none; }
+.library-upload { display: grid; gap: .35rem; border: 1px solid var(--bg200); border-radius: .4rem; padding: .7rem; background: var(--bg000); overflow-wrap: anywhere; }
+.library-upload strong { font-size: .85rem; }
+.library-upload span { font-size: .8rem; color: var(--text100); line-height: 1.5; }
+.library-upload progress { width: 100%; height: .45rem; accent-color: var(--reader-accent, var(--text000)); }
+.library-upload[data-state="failed"] { border-inline-start: 3px solid var(--text100); }
+.library-upload[data-state="cancelled"] { opacity: .7; }

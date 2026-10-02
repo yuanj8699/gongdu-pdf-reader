@@ -31,30 +31,42 @@ export function legacyReadingState(fingerprint: string, pageCount: number): { cl
 export function createLibraryPanel(container: HTMLElement, call: LibraryCall, openAsset: (assetId: string) => Promise<void>) {
   container.innerHTML = `<div class="library-heading"><div><h1>我的书库</h1><p>收好 PDF、论文和仓库资料，接着上次读。</p></div>
     <button type="button" id="library-refresh">刷新</button></div>
-    <label class="library-import">导入本地 PDF<input id="library-file" type="file" accept="application/pdf,.pdf"></label>
-    <p class="library-note">原件、阅读位置和书签保存在本机书库。支持 512 MB 以内的 PDF。</p>
-    <div class="library-progress"><p id="library-status" role="status" aria-live="polite"></p><button id="library-cancel" type="button" hidden>取消导入</button></div>
+    <label class="library-import">选择或拖入 PDF，可一次加入多份<input id="library-file" type="file" accept="application/pdf,.pdf" multiple></label>
+    <p class="library-note">原件、阅读位置和书签保存在本机书库。每份 PDF 最大 512 MB；相同文件只保留一份。</p>
+    <div class="library-progress"><p id="library-status" role="status" aria-live="polite"></p><button id="library-cancel" type="button" hidden>停止导入</button></div>
+    <ol id="library-upload-queue" aria-label="PDF 导入队列" hidden></ol>
     <section id="local-library-panel" hidden aria-label="本地文件夹"></section>
     <section id="arxiv-panel" hidden aria-label="arXiv 论文"></section>
     <section id="github-panel" hidden aria-label="GitHub 仓库"></section>
-    <ul id="library-list" aria-label="书库资料"></ul>`;
+    <div class="library-find"><label>查找书库<input id="library-search" type="search" placeholder="书名、文件名或仓库路径" autocomplete="off"></label>
+    <label>排序<select id="library-sort"><option value="recent">最近阅读</option><option value="added">最近加入</option><option value="title">书名</option></select></label></div>
+    <p id="library-count" class="library-note" role="status"></p><ul id="library-list" aria-label="书库资料"></ul>`;
   const input = container.querySelector<HTMLInputElement>("#library-file")!;
   const list = container.querySelector<HTMLUListElement>("#library-list")!;
   const status = container.querySelector<HTMLElement>("#library-status")!;
   const cancel = container.querySelector<HTMLButtonElement>("#library-cancel")!;
-  let importing = false, cancelled = false;
+  const uploadList = container.querySelector<HTMLOListElement>("#library-upload-queue")!;
+  const search = container.querySelector<HTMLInputElement>("#library-search")!;
+  const sort = container.querySelector<HTMLSelectElement>("#library-sort")!;
+  const count = container.querySelector<HTMLElement>("#library-count")!;
   const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+  let entries: LibraryEntry[] = [];
 
-  async function refresh() {
-    const { entries } = await call<{ entries: LibraryEntry[] }>("library_list", {});
+  function renderEntries() {
+    const query = search.value.trim().toLocaleLowerCase();
+    const visible = entries.filter(asset => [asset.title, asset.fileName, asset.githubSource?.path]
+      .some(value => value?.toLocaleLowerCase().includes(query)));
+    if (sort.value === "added") visible.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    else if (sort.value === "title") visible.sort((a, b) => a.title.localeCompare(b.title, "zh-CN", { numeric: true }));
+    count.textContent = query ? `找到 ${visible.length} / ${entries.length} 份资料` : `共 ${entries.length} 份资料`;
     list.replaceChildren();
-    if (!entries.length) {
+    if (!visible.length) {
       const empty = document.createElement("li");
       empty.className = "library-empty";
-      empty.textContent = "书库还是空的。选择一份 PDF 开始阅读。";
+      empty.textContent = query ? "没有找到匹配的资料，试试其他关键词。" : "书库还是空的。选择或拖入 PDF 开始阅读。";
       list.append(empty);
     }
-    for (const asset of entries) {
+    for (const asset of visible) {
       const item = document.createElement("li");
       item.className = "library-item";
       item.dataset.assetId = asset.assetId;
@@ -74,41 +86,148 @@ export function createLibraryPanel(container: HTMLElement, call: LibraryCall, op
       item.append(title, detail, button); list.append(item);
     }
   }
+  async function refresh() {
+    ({ entries } = await call<{ entries: LibraryEntry[] }>("library_list", {}));
+    renderEntries();
+  }
+  search.addEventListener("input", renderEntries);
+  sort.addEventListener("change", renderEntries);
   container.querySelector("#library-refresh")!.addEventListener("click", () => {
     void refresh().catch((error) => { status.textContent = `读取书库失败：${message(error)}`; });
   });
-  cancel.addEventListener("click", () => { cancelled = true; cancel.disabled = true; });
-  input.addEventListener("change", async () => {
-    const file = input.files?.[0];
-    if (!file || importing) return;
-    importing = true; cancelled = false; input.disabled = true; cancel.hidden = false; cancel.disabled = false;
-    status.textContent = `准备导入 ${file.name}…`;
+
+  type UploadState = "waiting" | "uploading" | "validating" | "done" | "failed" | "cancelled";
+  type Upload = { file: File; state: UploadState; item: HTMLLIElement; detail: HTMLElement; progress: HTMLProgressElement };
+  const uploads: Upload[] = [];
+  let work: Promise<void> | null = null, cancelled = false;
+  function setUpload(upload: Upload, state: UploadState, detail: string, progress?: number) {
+    upload.state = state;
+    upload.item.dataset.state = state;
+    upload.detail.textContent = detail;
+    upload.progress.hidden = state !== "uploading" && state !== "validating";
+    if (progress !== undefined) upload.progress.value = progress;
+    else if (state === "validating") upload.progress.removeAttribute("value");
+  }
+  function updateSummary(finished = false) {
+    const number = (state: UploadState) => uploads.filter(upload => upload.state === state).length;
+    const done = number("done"), failed = number("failed"), stopped = number("cancelled");
+    status.textContent = `${finished ? (cancelled ? "已停止导入。" : "导入完成。") : "正在导入。"}${done} 份已加入书库，${failed} 份失败${stopped ? `，${stopped} 份已取消` : ""}${finished ? "。相同文件只保留一份。" : `，${number("waiting")} 份等待。`}`;
+  }
+  async function uploadOne(upload: Upload) {
+    const { file } = upload;
     let uploadId: string | undefined;
     try {
+      setUpload(upload, "uploading", "准备上传…", 0);
       ({ uploadId } = await call<{ uploadId: string }>("library_begin_upload", { fileName: file.name, size: file.size }));
-      for (let offset = 0; offset < file.size; offset += 256 * 1024) {
-        if (cancelled) break;
+      for (let offset = 0; offset < file.size && !cancelled; offset += 256 * 1024) {
         const chunk = new Uint8Array(await file.slice(offset, offset + 256 * 1024).arrayBuffer());
+        if (cancelled) break;
         await call("library_upload_chunk", { uploadId, offset, bytes: uint8ArrayToBase64(chunk) });
-        status.textContent = `正在导入 ${file.name} · ${Math.round((offset + chunk.length) / file.size * 100)}%`;
+        const progress = Math.round((offset + chunk.length) / file.size * 100);
+        setUpload(upload, "uploading", `正在上传 · ${progress}%`, progress);
       }
       if (cancelled) {
         await call("library_cancel_upload", { uploadId }); uploadId = undefined;
-        status.textContent = "已取消导入。";
-      } else {
-        cancel.disabled = true; status.textContent = "正在校验 PDF 并保存原件…";
-        const asset = await call<LibraryAsset>("library_finish_upload", { uploadId }); uploadId = undefined;
-        await refresh(); status.textContent = `已加入书库：${asset.title}。相同文件只保留一份。`;
+        setUpload(upload, "cancelled", "已取消，未加入书库");
+        return;
       }
+      setUpload(upload, "validating", "正在校验 PDF 并保存原件…");
+      // Once the server commits this file, keep it even if the user stops the queue.
+      const asset = await call<LibraryAsset>("library_finish_upload", { uploadId }); uploadId = undefined;
+      setUpload(upload, "done", `已加入书库：${asset.title}`);
     } catch (error) {
-      status.textContent = `导入失败：${message(error)}`;
-      if (uploadId) await call("library_cancel_upload", { uploadId }).catch(() => {});
-    } finally { importing = false; input.disabled = false; input.value = ""; cancel.hidden = true; }
+      let detail = `导入失败：${message(error)}`;
+      // Final validation owns cleanup, including invalid PDFs; do not cancel an in-flight commit.
+      if (uploadId && upload.state !== "validating") {
+        try { await call("library_cancel_upload", { uploadId }); }
+        catch (cleanupError) { detail += `；临时上传未能清理：${message(cleanupError)}`; }
+      }
+      setUpload(upload, "failed", detail);
+    }
+  }
+  async function drainUploads() {
+    // A new drop can append files while the current upload is in flight.
+    let index = 0, refreshError: unknown;
+    do {
+      for (; index < uploads.length; index++) {
+        const upload = uploads[index];
+        if (upload.state !== "waiting") continue;
+        if (cancelled) { setUpload(upload, "cancelled", "已取消，尚未开始"); continue; }
+        updateSummary();
+        await uploadOne(upload);
+        updateSummary();
+      }
+      try { await refresh(); refreshError = undefined; }
+      catch (error) { refreshError = error; }
+      // Also drain files dropped while the list refresh was in flight.
+    } while (index < uploads.length);
+    updateSummary(true);
+    if (refreshError) status.textContent += ` 读取书库失败：${message(refreshError)}。已入库文件仍保留，可点击刷新重试。`;
+  }
+  /** Adds files without navigating away from the current book. */
+  function importFiles(files: Iterable<File>): Promise<void> {
+    const chosen = [...files];
+    if (!chosen.length) return work ?? Promise.resolve();
+    if (cancelled && work) {
+      status.textContent = "正在停止当前导入，请结束后重新选择或拖入文件。";
+      return work;
+    }
+    if (!work) { uploads.length = 0; uploadList.replaceChildren(); cancelled = false; }
+    for (const file of chosen) {
+      const item = document.createElement("li"); item.className = "library-upload";
+      const name = document.createElement("strong"); name.textContent = file.name;
+      const detail = document.createElement("span");
+      const progress = document.createElement("progress"); progress.max = 100; progress.value = 0; progress.hidden = true;
+      progress.setAttribute("aria-label", `导入进度：${file.name}`);
+      item.append(name, detail, progress); uploadList.append(item);
+      const upload: Upload = { file, state: "waiting", item, detail, progress }; uploads.push(upload);
+      if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") setUpload(upload, "failed", "仅支持 PDF 文件");
+      else if (file.size === 0) setUpload(upload, "failed", "文件为空，无法导入");
+      else if (file.size > 512 * 1024 * 1024) setUpload(upload, "failed", "文件超过 512 MB，请选择较小的 PDF");
+      else setUpload(upload, "waiting", `等待导入 · ${(file.size / 1048576).toFixed(1)} MB`);
+    }
+    uploadList.hidden = false;
+    cancel.hidden = false; cancel.disabled = false;
+    updateSummary();
+    if (!work) work = drainUploads().finally(() => { work = null; cancel.hidden = true; input.disabled = false; });
+    return work;
+  }
+  cancel.addEventListener("click", () => {
+    cancelled = true; cancel.disabled = true; input.disabled = true;
+    for (const upload of uploads) if (upload.state === "waiting") setUpload(upload, "cancelled", "已取消，尚未开始");
+    status.textContent = "正在停止导入。已加入书库的文件保留；已开始的最终校验会完成。";
+  });
+  input.addEventListener("change", () => {
+    const files = [...input.files ?? []]; input.value = "";
+    void importFiles(files);
+  });
+  let dragDepth = 0;
+  const fileDrag = (event: DragEvent) => event.dataTransfer?.types.includes("Files");
+  container.addEventListener("dragenter", event => {
+    if (!fileDrag(event)) return;
+    event.preventDefault(); event.stopPropagation();
+    dragDepth++; container.classList.add("library-drag-over");
+  });
+  container.addEventListener("dragover", event => {
+    if (!fileDrag(event)) return;
+    event.preventDefault(); event.stopPropagation();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = cancelled && work ? "none" : "copy";
+  });
+  container.addEventListener("dragleave", event => {
+    if (!fileDrag(event)) return;
+    event.preventDefault(); event.stopPropagation();
+    if (--dragDepth <= 0) { dragDepth = 0; container.classList.remove("library-drag-over"); }
+  });
+  container.addEventListener("drop", event => {
+    if (!fileDrag(event)) return;
+    event.preventDefault(); event.stopPropagation();
+    dragDepth = 0; container.classList.remove("library-drag-over");
+    if (event.dataTransfer) void importFiles(event.dataTransfer.files);
   });
   const arxiv = createArxivPanel(container.querySelector("#arxiv-panel")!, call, refresh, openAsset);
   const local = createLocalLibraryPanel(container.querySelector("#local-library-panel")!, call, refresh);
   const github = createGithubPanel(container.querySelector("#github-panel")!, call, refresh, openAsset);
-  return { attachReader: github.attachReader, async show(arxivEnabled = false, githubEnabled = false) {
+  return { importFiles, attachReader: github.attachReader, async show(arxivEnabled = false, githubEnabled = false) {
     container.hidden = false;
     try { await refresh(); }
     catch (error) { status.textContent = `读取书库失败：${message(error)}`; }
