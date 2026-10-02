@@ -71,7 +71,10 @@ export function createOcrPanel(container: HTMLElement, layer: HTMLElement, nativ
   function stop(): Promise<void> {
     revision++;
     cancel.hidden = true; start.disabled = !page || disposed; language.disabled = false; direction.disabled = false;
-    return Promise.all([...runs].map(cancelRun)).then(() => {});
+    return Promise.allSettled([...runs].map(cancelRun)).then(results => {
+      const failure = results.find(result => result.status === "rejected");
+      if (failure?.status === "rejected") throw failure.reason;
+    });
   }
   cancel.addEventListener("click", () => {
     const work = stop(), token = revision;
