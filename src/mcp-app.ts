@@ -218,6 +218,7 @@ const prevBtn = document.getElementById("prev-btn") as HTMLButtonElement;
 const nextBtn = document.getElementById("next-btn") as HTMLButtonElement;
 const zoomOutBtn = document.getElementById("zoom-out-btn") as HTMLButtonElement;
 const zoomInBtn = document.getElementById("zoom-in-btn") as HTMLButtonElement;
+const rotatePageBtn = document.getElementById("rotate-page-btn") as HTMLButtonElement;
 const zoomLevelEl = document.getElementById("zoom-level") as HTMLInputElement;
 const fullscreenBtn = document.getElementById(
   "fullscreen-btn",
@@ -256,9 +257,9 @@ outlineToggle.addEventListener("click", () => {
   readerNavigation.setExpanded(!readerNavigation.expanded);
 });
 async function refitReader() {
-  if (userHasZoomed) return;
+  if (userHasZoomed || readSelection()) return;
   const fitted = await computeFitScale();
-  if (fitted !== null && !userHasZoomed) { scale = fitted; void renderPage(); }
+  if (fitted !== null && !userHasZoomed && !readSelection()) { scale = fitted; void renderPage(); }
 }
 function documentStorageKey(): string | undefined {
   const fingerprint = pdfDocument?.fingerprints[0];
@@ -268,6 +269,11 @@ let pageLabels: string[] | null = null;
 type PdfViewport = ReturnType<pdfjsLib.PDFPageProxy["getViewport"]>;
 let renderedRotation = 0;
 let renderedViewport: PdfViewport | null = null;
+// View-only rotation belongs to this open document, never to its saved bytes.
+const pageViewRotations = new Map<number, number>();
+function pageViewport(page: pdfjsLib.PDFPageProxy, zoom: number): PdfViewport {
+  return page.getViewport({ scale: zoom, rotation: (page.rotate + (pageViewRotations.get(page.pageNumber) ?? 0)) % 360 });
+}
 type ReadingSelection = { text: string; page: number; document: pdfjsLib.PDFDocumentProxy; context: ReadingContext };
 function captureReadingContext(text?: string, rects?: SelectionRect[]): ReadingContext {
   const context = createReadingContext({ asset: currentLibraryAsset, viewUUID, title: pdfTitle || "PDF", uri: pdfUrl,
@@ -415,7 +421,7 @@ async function computeFitScale(mode: "auto" | "width" | "page" = "auto"): Promis
 
   try {
     const page = await pdfDocument.getPage(currentPage);
-    const naturalViewport = page.getViewport({ scale: 1.0 });
+    const naturalViewport = pageViewport(page, 1);
     const pageWidth = naturalViewport.width;
     const pageHeight = naturalViewport.height;
 
@@ -463,9 +469,10 @@ async function computeFitScale(mode: "auto" | "width" | "page" = "auto"): Promis
  * as a fast path / belt-and-suspenders.
  */
 async function refitScale(): Promise<void> {
-  if (!pdfDocument || userHasZoomed) return;
+  // Opening a reading tool must keep the passage the reader just selected.
+  if (!pdfDocument || userHasZoomed || readSelection()) return;
   const fitScale = await computeFitScale();
-  if (!userHasZoomed && fitScale !== null && Math.abs(fitScale - scale) > 0.01) {
+  if (!userHasZoomed && !readSelection() && fitScale !== null && Math.abs(fitScale - scale) > 0.01) {
     scale = fitScale;
     log.info("Refit scale:", scale);
     renderPage();
@@ -902,7 +909,7 @@ const ocrPanel = createOcrPanel(ocrContainer, ocrLayer, textLayerEl, callLibrary
   if (!document || renderedText?.generation !== generation || renderedText.page !== pageNumber) throw new Error("请等页面加载完成再识别。");
   const page = await document.getPage(pageNumber);
   signal.throwIfAborted();
-  const base = page.getViewport({ scale: 1 });
+  const base = pageViewport(page, 1);
   const viewport = page.getViewport({ scale: Math.min(3.5, 2600 / Math.max(base.width, base.height)), rotation: (base.rotation + rotation) % 360 });
   const canvas = window.document.createElement("canvas"); canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
   const task = page.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport, annotationMode: AnnotationMode.DISABLE });
@@ -934,7 +941,7 @@ const studyPanel = createStudyPanel(studyContainer, host,
     await openLibraryAsset(asset.assetId);
     if (context.location.format === "pdf") {
       if (!pdfDocument || !readingStateReady || errorEl.style.display !== "none") throw new Error("原文尚未成功加载，请检查阅读器的错误提示。");
-      goToPage(position);
+      await navigateReadingPage(position, context.location.rotation);
       while (isRendering) await renderFinished;
       await readingSaveWork;
       if (readerLoadError) throw new Error(readerLoadError);
@@ -1178,6 +1185,9 @@ function updateControls() {
   if (document.activeElement !== zoomLevelEl) zoomLevelEl.value = `${Math.round(scale * 100)}%`;
   zoomOutBtn.disabled = scale <= ZOOM_MIN;
   zoomInBtn.disabled = scale >= ZOOM_MAX;
+  const angle = pageViewRotations.get(currentPage) ?? 0;
+  rotatePageBtn.textContent = angle ? '旋转 · ' + angle + '°' : '旋转';
+  rotatePageBtn.title = '本页顺时针旋转 90°，仅改变阅读方向，不修改 PDF';
 }
 
 /**
@@ -1336,7 +1346,7 @@ async function updatePageContext() {
     );
 
     // Get page dimensions in PDF points for model context
-    const viewport = page.getViewport({ scale: 1.0 });
+    const viewport = pageViewport(page, 1);
     const pageWidthPt = Math.round(viewport.width);
     const pageHeightPt = Math.round(viewport.height);
 
@@ -2733,13 +2743,13 @@ function expandIntervals(
 async function renderPageOffscreen(pageNum: number): Promise<string> {
   if (!pdfDocument) throw new Error("No PDF loaded");
   const page = await pdfDocument.getPage(pageNum);
-  const baseViewport = page.getViewport({ scale: 1.0 });
+  const baseViewport = pageViewport(page, 1);
 
   // Scale down to fit within SCREENSHOT_MAX_DIM
   const maxDim = Math.max(baseViewport.width, baseViewport.height);
   const renderScale =
     maxDim > SCREENSHOT_MAX_DIM ? SCREENSHOT_MAX_DIM / maxDim : 1.0;
-  const viewport = page.getViewport({ scale: renderScale });
+  const viewport = pageViewport(page, renderScale);
 
   const canvas = document.createElement("canvas");
   const dpr = 1; // No retina scaling for model screenshots
@@ -2779,15 +2789,17 @@ async function renderPageOffscreen(pageNum: number): Promise<string> {
  * it can be fed straight back into `add_annotations`.
  */
 async function handleGetViewerState(requestId: string): Promise<void> {
+  while (isRendering) await renderFinished;
   const capturedDocument = pdfDocument;
   const capturedPage = currentPage;
+  const capturedRotation = renderedRotation;
   const selected = readSelection();
   let readingContext = capturedDocument ? selected?.context ?? captureReadingContext() : null;
   if (capturedDocument && readingContext) {
     const page = await capturedDocument.getPage(capturedPage);
     const text = await page.getTextContent();
-    if (!readingContext.textSource) readingContext = withNearbyText({ ...readingContext, location: { ...readingContext.location, rotation: page.rotate } }, text.items.map(item => "str" in item ? item.str : "").join(" "));
-    if (capturedDocument !== pdfDocument || capturedPage !== currentPage) throw new Error("阅读位置已变化，请重新读取上下文。");
+    if (!readingContext.textSource) readingContext = withNearbyText({ ...readingContext, location: { ...readingContext.location, rotation: capturedRotation } }, text.items.map(item => "str" in item ? item.str : "").join(" "));
+    if (capturedDocument !== pdfDocument || capturedPage !== currentPage || capturedRotation !== renderedRotation || isRendering) throw new Error("阅读位置已变化，请重新读取上下文。");
   }
   const rects = readingContext?.location.rects ?? [];
   const left = Math.min(...rects.map(r => r.x)), top = Math.min(...rects.map(r => r.y));
@@ -2805,6 +2817,7 @@ async function handleGetViewerState(requestId: string): Promise<void> {
     currentPage,
     pageCount: totalPages,
     zoom: Math.round(scale * 100),
+    rotation: renderedRotation,
     displayMode: currentDisplayMode,
     selectedAnnotationIds: [...selectedAnnotationIds],
     selection,
@@ -2846,7 +2859,8 @@ async function collectPageData(
 
     if (getText) {
       // Use cached text if available, otherwise extract on the fly
-      const recognized = ocrPanel.cachedPage(loadGeneration, pageNum);
+      const modelViewport = pdfDocument ? await getModelViewport(pageNum) : null;
+      const recognized = modelViewport ? ocrPanel.cachedPage(loadGeneration, pageNum, modelViewport.rotation) : undefined;
       let text = recognized ? "[本机 OCR，未经人工核对；语言：" + recognized.language + "]\n" + recognized.text : pageTextCache.get(pageNum);
       if (text == null && pdfDocument) {
         try {
@@ -3538,7 +3552,7 @@ async function renderPage() {
   try {
     const pageToRender = currentPage;
     const page = await pdfDocument.getPage(pageToRender);
-    const viewport = page.getViewport({ scale });
+    const viewport = pageViewport(page, scale);
     renderedRotation = viewport.rotation;
 
     // Account for retina displays
@@ -3664,11 +3678,11 @@ async function renderPage() {
 
     // Render PDF.js AnnotationLayer for interactive form widgets
     formLayerEl.innerHTML = "";
-    formLayerEl.style.width = `${viewport.width}px`;
-    formLayerEl.style.height = `${viewport.height}px`;
+    formLayerEl.style.width = annotationViewport.width + "px";
+    formLayerEl.style.height = annotationViewport.height + "px";
     // Set CSS custom properties so AnnotationLayer font-size rules work correctly
     formLayerEl.style.setProperty("--scale-factor", `${scale}`);
-    formLayerEl.style.setProperty("--total-scale-factor", `${scale}`);
+    formLayerEl.style.setProperty("--total-scale-factor", `${scale * page.userUnit}`);
     try {
       const annotations = await page.getAnnotations();
       // Lazy baseline import — piggyback on the annotations we just fetched
@@ -3714,6 +3728,11 @@ async function renderPage() {
           annotationStorage: pdfDocument.annotationStorage,
           fieldObjects: cachedFieldObjects,
         } as any);
+
+        // Like TextLayer, widget percentages belong to the unrotated page.
+        // Supply pixel dimensions when viewer-only CSS variables are absent.
+        formLayerEl.style.width = annotationViewport.width + "px";
+        formLayerEl.style.height = annotationViewport.height + "px";
 
         // Fix combo reset: pdf.js's resetform handler sets all
         // option.selected = (option.value === defaultFieldValue), and
@@ -3912,6 +3931,38 @@ function zoomOut() {
   // to shrink past it. Pinch still rubber-bands at fit (see commitPinch).
   setZoom(scale - 0.25);
 }
+
+/** Restore an explicit reference direction or rotate this page without editing it. */
+async function navigateReadingPage(pageNumber: number, rotation?: number) {
+  const document = pdfDocument;
+  if (!document) return;
+  if (rotation === undefined) { goToPage(pageNumber); return; }
+  const startedPage = currentPage;
+  const page = await document.getPage(pageNumber);
+  if (document !== pdfDocument || currentPage !== startedPage) throw new Error('阅读位置已变化，请重新定位。');
+  if (![0, 90, 180, 270].includes(rotation)) throw new Error('记录的页面方向无效。');
+  cancelWheelZoom();
+  pageViewRotations.set(pageNumber, (rotation - page.rotate + 360) % 360);
+  renderedText = null; ocrPanel.invalidate();
+  clearReadingSelection();
+  selectAnnotation(null);
+  currentPage = pageNumber;
+  pageLanding = 'top';
+  saveCurrentPage();
+  if (!userHasZoomed) {
+    const fitted = await computeFitScale();
+    if (document !== pdfDocument || currentPage !== pageNumber) throw new Error('阅读位置已变化，请重新定位。');
+    if (fitted !== null) scale = fitted;
+  }
+  await renderPage();
+}
+rotatePageBtn.addEventListener('click', async () => {
+  if (!pdfDocument || isRendering || rotatePageBtn.disabled) return;
+  rotatePageBtn.disabled = true;
+  try { await navigateReadingPage(currentPage, (renderedRotation + 90) % 360); }
+  catch (error) { selectionStatusEl.textContent = error instanceof Error ? error.message : String(error); }
+  finally { rotatePageBtn.disabled = false; }
+});
 
 async function fitZoom(mode: "width" | "page") {
   cancelWheelZoom();
@@ -4766,6 +4817,7 @@ async function fetchRange(
  * Preserves currentPage (clamped). Does not stop/restart the poll loop.
  */
 async function reloadPdf(): Promise<void> {
+  pageViewRotations.clear();
   ocrPanel.invalidate(true);
   clearReadingSelection();
   readerNavigation.clear();
@@ -5034,6 +5086,7 @@ async function handleReaderResult(result: CallToolResult) {
   await commandWork.catch(() => {}); // The poll loop already reports command failures.
   loadGeneration++;
   ocrPanel.invalidate(true); readerWidgets.setProgress(null); pageLanding = "top";
+  pageViewRotations.clear(); renderedRotation = 0;
   if (pdfDocument) persistAnnotations();
   currentRenderTask?.cancel();
   await renderFinished;
@@ -5239,7 +5292,7 @@ import type { PdfCommand } from "./commands.js";
 async function getModelViewport(pageNum: number): Promise<PdfViewport> {
   if (!pdfDocument) throw new Error("No PDF loaded");
   const page = await pdfDocument.getPage(pageNum);
-  return page.getViewport({ scale: 1.0 });
+  return pageViewport(page, 1);
 }
 
 /**
@@ -5254,7 +5307,7 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
       case "navigate_reference":
         try {
           assertReferenceTarget(cmd.target, pdfDocument ? captureReadingContext() : null, cmd.location.pageNumber, totalPages);
-          goToPage(cmd.location.pageNumber);
+          await navigateReadingPage(cmd.location.pageNumber, cmd.location.rotation);
           while (isRendering) await renderFinished;
           if (readerLoadError) throw new Error(readerLoadError);
           await handleGetViewerState(cmd.requestId);

@@ -146,7 +146,7 @@ export function createOcrPanel(container: HTMLElement, layer: HTMLElement, nativ
   return {
     layer,
     result() { return active; },
-    cachedPage(generation: number, number: number) { return [...cache].find(([key]) => key.startsWith(generation + ":" + number + ":"))?.[1]; },
+    cachedPage(generation: number, number: number, rotation: number) { return cache.get(generation + ":" + number + ":" + rotation); },
     async dispose() { disposed = true; page = null; clearLayer(); cache.clear(); await stop(); },
     invalidate(clearCache = false) {
       page = null; clearLayer();
