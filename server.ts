@@ -1571,7 +1571,7 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
           )
           .optional()
           .describe(
-            "Form fields with bounding boxes in model coordinates (top-left origin)",
+            "Form fields with top-left bounding boxes in the original file orientation, including its native rotation and crop; unaffected by viewer-only rotation",
           ),
       }),
       _meta: {
@@ -1796,7 +1796,7 @@ URL: ${normalized}`,
 
   if (!disableInteract) {
     server.registerTool("reader_navigate", {
-      description: "Jump to a cited PDF file page in an already-open library viewer. Copy all target IDs from readingContext; the exact document/version/asset and viewUUID must match. location.pageNumber is the one-based file page, not a printed page label. Returns acknowledged viewer state; rejects stale references and out-of-range pages.",
+      description: "Jump to a cited PDF file page in an already-open library viewer. Copy all target IDs from readingContext; the exact document/version/asset and viewUUID must match. location.pageNumber is the one-based file page, not a printed page label. Optional location.rotation (0, 90, 180, or 270) restores the absolute displayed angle saved in readingContext.location.rotation. Returns acknowledged viewer state; rejects stale references and out-of-range pages.",
       inputSchema: z.object({ target: ReferenceTargetSchema, location: PdfPageSchema }),
       annotations: { destructiveHint: false, idempotentHint: true },
     }, async ({ target, location }, extra) => {
@@ -2507,7 +2507,8 @@ IMPORTANT: viewUUID must be the exact UUID returned by display_pdf (e.g. "a1b2c3
 - US Letter = 612×792pt. Margins: top≈y=50, bottom≈y=742, left≈x=72, right≈x=540, center≈(306, 396).
 - Rectangle/circle/stamp x,y is the TOP-LEFT corner. To place a 200×30 box at the TOP of the page: x=72, y=50, width=200, height=30.
 - For highlights/underlines, each rect's y is the TOP of the highlighted region.
-- Page coordinates include the PDF's rotation and crop. Annotation rotation is its own angle relative to the unrotated PDF page; the page's display angle is applied separately.
+- Page coordinates follow the current viewing angle for that page in this viewer, including its crop. Read readingContext.location.rotation or get_screenshot after changing direction. Annotation rotation is its own angle relative to the unrotated PDF page; the page's display angle is applied separately.
+- display_pdf formFields metadata uses the original file orientation, not a later viewer-only rotation. Use current viewer state/screenshots for interactive placement.
 
 Annotation types:
 • highlight: rects:[{x,y,width,height}], color?, content? • underline: rects:[{x,y,w,h}], color?

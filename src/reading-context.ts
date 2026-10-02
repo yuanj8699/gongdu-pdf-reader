@@ -6,7 +6,12 @@ export const ReferenceTargetSchema = z.object({
   versionId: z.string().uuid(), assetId: z.string().uuid(),
 });
 export type ReferenceTarget = z.infer<typeof ReferenceTargetSchema>;
-export const PdfPageSchema = z.object({ format: z.literal("pdf"), pageNumber: z.number().int().positive() });
+export const PdfPageSchema = z.object({
+  format: z.literal("pdf"), pageNumber: z.number().int().positive(),
+  rotation: z.literal([0, 90, 180, 270]).optional()
+    .describe("Absolute displayed page angle from readingContext.location.rotation; restores the cited viewing direction when provided"),
+});
+export type PdfPageLocation = z.infer<typeof PdfPageSchema>;
 export type SelectionRect = { x: number; y: number; width: number; height: number };
 
 /** Only implemented formats belong in this protocol. Page numbers are one-based file pages. */

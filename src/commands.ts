@@ -12,7 +12,7 @@
  */
 
 import type { PdfAnnotationDef } from "./pdf-annotations.js";
-import type { ReferenceTarget } from "./reading-context.js";
+import type { PdfPageLocation, ReferenceTarget } from "./reading-context.js";
 
 /** Single form field assignment, as sent by `fill_form`. */
 export interface FormFieldFill {
@@ -42,7 +42,7 @@ export interface PageInterval {
  * (to execute).
  */
 export type PdfCommand =
-  | { type: "navigate_reference"; target: ReferenceTarget; location: { format: "pdf"; pageNumber: number }; requestId: string }
+  | { type: "navigate_reference"; target: ReferenceTarget; location: PdfPageLocation; requestId: string }
   | { type: "navigate"; page: number }
   | { type: "search"; query: string }
   | { type: "find"; query: string }
