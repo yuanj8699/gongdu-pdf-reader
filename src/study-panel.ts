@@ -35,6 +35,9 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
   let visibleIds = new Set<string>();
   let entries: StudyEntry[] = [], sending = false, loadFailed = false, loading = false;
   let unsavedReceiptId: string | null = null;
+  let sendingEntryId: string | null = null;
+  let deleteConfirmation: { id: string; expected: string | undefined; error?: string } | null = null;
+  const saving = new Set<string>(), deleting = new Set<string>(), returning = new Set<string>();
   let returnRequest = 0;
   const stored = new Map<string, string>(), pending = new Set<string>();
   const states = new Map<string, HTMLElement>();
@@ -51,19 +54,83 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
     entries = readStored();
     for (const entry of entries) stored.set(entry.id, JSON.stringify(entry));
   } catch (error) { loadFailed = true; status.textContent = `无法读取学习记录：${message(error)}`; }
+  function entryButton(id: string, action: string) {
+    return [...list.querySelectorAll<HTMLButtonElement>("button[data-entry-action]")]
+      .find(button => button.dataset.entryId === id && button.dataset.entryAction === action);
+  }
+  function updateEntryControls() {
+    for (const button of list.querySelectorAll<HTMLButtonElement>("button[data-entry-action]")) {
+      const id = button.dataset.entryId!, action = button.dataset.entryAction;
+      const confirming = deleteConfirmation?.id === id;
+      const busy = saving.has(id) || deleting.has(id) || (action === "back" && returning.has(id));
+      button.disabled = action === "cancel-delete" ? deleting.has(id)
+        : busy || ((action === "delete" || action === "confirm-delete") && (sending || loadFailed || deleting.size > 0))
+          || (confirming && (action === "save" || action === "back" || action === "review" || action === "delete"));
+    }
+    for (const note of list.querySelectorAll<HTMLTextAreaElement>("textarea[data-entry-id]")) {
+      note.disabled = deleteConfirmation?.id === note.dataset.entryId || deleting.has(note.dataset.entryId!);
+    }
+  }
   async function persist(entry: StudyEntry) {
     if (loadFailed) throw new Error("原学习记录未能读取，不能覆盖。请先导出或修复本机记录。");
     if (!navigator.locks) throw new Error("当前客户端不支持跨窗口安全保存学习记录。");
+    if (saving.has(entry.id) || deleting.has(entry.id)) throw new Error("这条记录正在保存或删除，请稍候再试。");
     const expected = stored.get(entry.id);
-    // Read and replace only this record under the shared origin lock.
-    await navigator.locks.request(key, () => {
-      const latest = readStored(), previous = latest.find(value => value.id === entry.id);
-      if (JSON.stringify(previous) !== expected) throw new Error("另一窗口已修改这条记录。请先复制当前笔记，再刷新查看最新版本；本次没有覆盖。");
-      const next = previous ? latest.map(value => value.id === entry.id ? entry : value) : [...latest, entry];
-      localStorage.setItem(key, JSON.stringify(next));
-      stored.set(entry.id, JSON.stringify(entry));
-      if (JSON.stringify(entries.find(value => value.id === entry.id)) === JSON.stringify(entry)) pending.delete(entry.id);
-    });
+    saving.add(entry.id); updateEntryControls();
+    try {
+      // Read and replace only this record under the shared origin lock.
+      await navigator.locks.request(key, () => {
+        const latest = readStored(), previous = latest.find(value => value.id === entry.id);
+        if (JSON.stringify(previous) !== expected) throw new Error("另一窗口已修改这条记录。请先复制当前笔记，再刷新查看最新版本；本次没有覆盖。");
+        const next = previous ? latest.map(value => value.id === entry.id ? entry : value) : [...latest, entry];
+        localStorage.setItem(key, JSON.stringify(next));
+        stored.set(entry.id, JSON.stringify(entry));
+        if (JSON.stringify(entries.find(value => value.id === entry.id)) === JSON.stringify(entry)) pending.delete(entry.id);
+      });
+    } finally { saving.delete(entry.id); updateEntryControls(); }
+  }
+  function mergeStoredEntries(latest: StudyEntry[]) {
+    // A confirmation or an outstanding AI reply owns its original baseline,
+    // just like an unsaved draft; a storage event must not silently replace it.
+    const local = entries.filter(entry => pending.has(entry.id) || deleteConfirmation?.id === entry.id || sendingEntryId === entry.id);
+    entries = latest.map(entry => local.find(value => value.id === entry.id) ?? entry);
+    entries.push(...local.filter(entry => !latest.some(value => value.id === entry.id)));
+    for (const entry of latest) if (!local.some(value => value.id === entry.id)) stored.set(entry.id, JSON.stringify(entry));
+  }
+  async function deleteEntry(id: string) {
+    const confirmation = deleteConfirmation;
+    if (!confirmation || confirmation.id !== id || sending || saving.has(id) || deleting.size || loadFailed) return;
+    const index = [...list.querySelectorAll<HTMLButtonElement>('button[data-entry-action="delete"]')]
+      .findIndex(button => button.dataset.entryId === id);
+    deleting.add(id); updateEntryControls();
+    let removed = false;
+    try {
+      if (!navigator.locks) throw new Error("当前客户端不支持跨窗口安全删除学习记录。");
+      const next = await navigator.locks.request(key, () => {
+        const latest = readStored(), previous = latest.find(entry => entry.id === id);
+        if (JSON.stringify(previous) !== confirmation.expected) throw new Error("另一窗口已修改或删除这条记录。当前记录与草稿已保留，请复制后刷新核对。");
+        const remaining = latest.filter(entry => entry.id !== id);
+        localStorage.setItem(key, JSON.stringify(remaining));
+        return remaining;
+      });
+      entries = entries.filter(entry => entry.id !== id);
+      stored.delete(id); pending.delete(id); states.delete(id);
+      if (unsavedReceiptId === id) unsavedReceiptId = null;
+      deleteConfirmation = null;
+      mergeStoredEntries(next);
+      removed = true;
+      render();
+      if (!unsavedReceiptId) status.textContent = "已删除这条本机学习记录。";
+    } catch (error) {
+      confirmation.error = "删除失败：" + message(error);
+      render();
+    } finally {
+      deleting.delete(id); updateEntryControls();
+      if (removed) {
+        const remaining = [...list.querySelectorAll<HTMLButtonElement>('button[data-entry-action="delete"]')];
+        (remaining[Math.min(index, remaining.length - 1)] ?? history.querySelector<HTMLElement>("summary"))?.focus();
+      } else entryButton(id, "cancel-delete")?.focus();
+    }
   }
   function change(entry: StudyEntry) {
     entries = entries.map(value => value.id === entry.id ? entry : value);
@@ -90,7 +157,7 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
     exportButton.disabled = !visible.length;
     if (!visible.length) { list.textContent = entries.length ? "当前范围没有匹配记录，可切换全部资料或清除搜索。" : "选一段原文或直接记本页笔记，下次从这里返回。"; return; }
     for (const entry of [...visible].reverse()) {
-      const item = document.createElement("li");
+      const item = document.createElement("li"); item.dataset.entryId = entry.id;
       const heading = document.createElement("strong"); heading.textContent = `${actions[entry.action].label} · ${entry.context.title} · ${position(entry.context)}`;
       const state = document.createElement("p"); state.textContent = pending.has(entry.id)
         ? (entry.action === "note" ? "笔记尚未保存" : `${entry.status} · 本机修改尚未保存`) : entry.status;
@@ -107,6 +174,7 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
       });
       const save = document.createElement("button"); save.type = "button"; save.textContent = "保存笔记";
       save.addEventListener("click", async () => {
+        if (saving.has(entry.id) || deleting.has(entry.id) || deleteConfirmation?.id === entry.id) return;
         save.disabled = true;
         const value = entries.find(value => value.id === entry.id)!;
         const updated = { ...value, note: note.value, status: value.action === "note" ? "笔记已保存到本机" : value.status };
@@ -117,11 +185,12 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
           if (unsavedReceiptId === entry.id && !pending.has(entry.id)) { status.textContent = updated.status; unsavedReceiptId = null; }
         }
         catch (error) { showEntryStatus(entry.id, `笔记未保存：${message(error)}`, true); }
-        finally { save.disabled = false; }
+        finally { updateEntryControls(); }
       });
       const back = document.createElement("button"); back.type = "button"; back.textContent = "返回原文";
       back.addEventListener("click", async () => {
         const request = ++returnRequest;
+        returning.add(entry.id);
         back.disabled = true;
         try {
           await resume(entry.context);
@@ -133,7 +202,7 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
             showEntryStatus(entry.id, "已取消较早的返回请求。");
           } else showEntryStatus(entry.id, `返回失败：${message(error)}`, true);
         }
-        finally { back.disabled = false; }
+        finally { returning.delete(entry.id); updateEntryControls(); }
       });
       const review = document.createElement("button"); review.type = "button"; review.textContent = "检验我的理解";
       review.addEventListener("click", () => {
@@ -141,8 +210,44 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
         if (!entry.context.selection?.text) { state.textContent = "请先选中原文建立笔记，才能让 AI 对照原文检验。"; return; }
         void addEntry("review", structuredClone(entry.context), note.value);
       });
-      item.append(heading, state, quote, note, save, back, review); list.append(item);
+      const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "删除记录";
+      remove.setAttribute("aria-expanded", String(deleteConfirmation?.id === entry.id));
+      remove.addEventListener("click", () => {
+        if (sending || saving.has(entry.id) || deleting.size || loadFailed) return;
+        deleteConfirmation = { id: entry.id, expected: stored.get(entry.id) };
+        render(); entryButton(entry.id, "cancel-delete")?.focus();
+      });
+      for (const [button, action] of [[save, "save"], [back, "back"], [review, "review"], [remove, "delete"]] as const) {
+        button.dataset.entryId = entry.id; button.dataset.entryAction = action;
+      }
+      item.append(heading, state, quote, note, save, back, review, remove);
+      if (deleteConfirmation?.id === entry.id) {
+        const confirmation = document.createElement("div"); confirmation.className = "study-delete-confirm";
+        confirmation.setAttribute("role", "group"); confirmation.setAttribute("aria-label", "确认删除学习记录");
+        const warning = document.createElement("p");
+        warning.textContent = "确认删除这条记录？仅删除本机学习记录，不影响原文或聊天中的消息。"
+          + (pending.has(entry.id) ? "这条记录的未保存草稿和状态也会一并丢弃。" : "");
+        const error = document.createElement("p"); error.className = "study-delete-error"; error.setAttribute("role", "alert");
+        error.textContent = deleteConfirmation.error ?? ""; error.hidden = !deleteConfirmation.error;
+        const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "取消";
+        const confirm = document.createElement("button"); confirm.type = "button"; confirm.textContent = "确认删除";
+        for (const [button, action] of [[cancel, "cancel-delete"], [confirm, "confirm-delete"]] as const) {
+          button.dataset.entryId = entry.id; button.dataset.entryAction = action;
+        }
+        const cancelDelete = () => {
+          if (deleting.has(entry.id)) return;
+          deleteConfirmation = null; render(); entryButton(entry.id, "delete")?.focus();
+        };
+        cancel.addEventListener("click", cancelDelete);
+        confirmation.addEventListener("keydown", event => {
+          if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelDelete(); }
+        });
+        confirm.addEventListener("click", () => void deleteEntry(entry.id));
+        confirmation.append(warning, error, cancel, confirm); item.append(confirmation);
+      }
+      list.append(item);
     }
+    updateEntryControls();
   }
   const buttons: HTMLButtonElement[] = [];
   let selected: StudyContext | null = null;
@@ -157,6 +262,7 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
       button.disabled = sending || loadFailed || (button.dataset.action === "note" ? !asset : !selected);
       if (button.dataset.action === "note") button.textContent = selected ? "记笔记" : "记本页笔记";
     }
+    updateEntryControls();
     container.querySelector("#study-selection")!.textContent = selected ? `${position(selected)} · 已选 ${selected.selection!.text.length} 字`
       : context?.identity.kind === "transient" ? "加入书库后可保存实践与笔记记录" : context ? position(context) + " · 记下自己的理解" : "选择资料开始共读";
   }
@@ -164,14 +270,14 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
     if (sending || loadFailed || context.identity.kind !== "library") return;
     const entry: StudyEntry = { id: crypto.randomUUID(), context: structuredClone(context), action, createdAt: new Date().toISOString(), note,
       status: action === "note" ? "出处已保存，等待你的笔记" : "已保存原文，准备发送请求" };
-    unsavedReceiptId = null; sending = true; refresh();
+    unsavedReceiptId = null; sending = true; sendingEntryId = entry.id; refresh();
     try { await persist(entry); entries.push(entry); }
-    catch (error) { status.textContent = "未能保存原文记录，操作未发送：" + message(error); sending = false; refresh(); return; }
+    catch (error) { status.textContent = "未能保存原文记录，操作未发送：" + message(error); sending = false; sendingEntryId = null; refresh(); return; }
     status.textContent = entry.status;
     search.value = "";
     if (activeAsset !== context.identity.assetId) scope.value = "all";
     render();
-    if (action === "note") { sending = false; refresh(); if (history.open) list.querySelector("textarea")?.focus(); return; }
+    if (action === "note") { sending = false; sendingEntryId = null; refresh(); if (history.open) list.querySelector("textarea")?.focus(); return; }
     status.textContent = "正在发送" + actions[action].label + "请求…";
     try {
       await host.ask(entry.context, actions[action].prompt + (action === "review" ? "\n" + JSON.stringify(note) : ""));
@@ -181,7 +287,7 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
     change(received);
     try { await persist(received); status.textContent = entry.status; }
     catch (error) { unsavedReceiptId = entry.id; status.textContent = entry.status + "；状态尚未保存，可用保存笔记重试：" + message(error); }
-    sending = false;
+    sending = false; sendingEntryId = null;
     showEntryStatus(entry.id, entry.status + (pending.has(entry.id) ? " · 本机修改尚未保存" : ""));
     refresh();
   }
@@ -233,11 +339,7 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
     if (event.storageArea !== localStorage || (event.key !== key && event.key !== null)) return;
     try {
       const latest = readStored();
-      // Keep local drafts and their old baseline so conflicting saves are rejected.
-      const drafts = entries.filter(entry => pending.has(entry.id));
-      entries = latest.map(entry => drafts.find(draft => draft.id === entry.id) ?? entry);
-      entries.push(...drafts.filter(entry => !latest.some(value => value.id === entry.id)));
-      for (const entry of latest) if (!pending.has(entry.id)) stored.set(entry.id, JSON.stringify(entry));
+      mergeStoredEntries(latest);
       const active = document.activeElement instanceof HTMLTextAreaElement && container.contains(document.activeElement) ? document.activeElement : null;
       const focus = active ? { id: active.dataset.entryId, start: active.selectionStart, end: active.selectionEnd } : null;
       render();

@@ -20,3 +20,9 @@
 #study-history .study-actions { margin-block: .5rem .75rem; }
 #study-status { overflow-wrap: anywhere; }
 @media (pointer: coarse) { #study-history > summary { min-height: 44px; } }
+
+.study-delete-confirm { margin-top: .65rem; padding: .65rem; border: 1px solid var(--bg300); border-radius: var(--reader-radius, 6px); background: var(--bg100); }
+.study-delete-confirm p { margin: 0 0 .4rem; line-height: 1.6; overflow-wrap: anywhere; }
+.study-delete-confirm button + button { margin-left: .5rem; }
+.study-delete-error { font-weight: 600; }
+.study-delete-confirm button:focus-visible { outline: 2px solid var(--reader-accent); outline-offset: 2px; }
