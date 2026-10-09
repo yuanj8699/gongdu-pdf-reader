@@ -26,3 +26,18 @@
 .study-delete-confirm button + button { margin-left: .5rem; }
 .study-delete-error { font-weight: 600; }
 .study-delete-confirm button:focus-visible { outline: 2px solid var(--reader-accent); outline-offset: 2px; }
+
+.study-question-composer { margin-block: .75rem; padding: .75rem; border: 1px solid var(--bg300); border-radius: var(--reader-radius); background: var(--bg100); }
+.study-question-composer > p { margin: 0 0 .5rem; line-height: 1.5; overflow-wrap: anywhere; }
+.study-question-composer > blockquote { max-height: 8rem; overflow: auto; margin: .5rem 0; padding-left: .6rem; border-left: 2px solid var(--reader-accent); white-space: pre-wrap; overflow-wrap: anywhere; }
+#study-question-quote[aria-label]::before { content: "OCR · 未经人工核对"; display: block; color: var(--reader-accent); font-weight: 600; }
+.study-question-composer > label { display: block; font-weight: 600; margin-block: .5rem .25rem; }
+#study-question-input { display: block; width: 100%; box-sizing: border-box; resize: vertical; min-height: 5rem; font: inherit; color: var(--text000); background: var(--bg000); border: 1px solid var(--bg300); border-radius: var(--reader-radius); padding: .5rem; }
+#study-question-input::placeholder { color: var(--text100); }
+#study-question-input:focus-visible { outline: 2px solid var(--reader-accent); outline-offset: 2px; }
+#study-question-status { margin-top: .4rem; }
+#study-question-status:empty { display: none; }
+.study-question-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.study-entry-question { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+@media (pointer: coarse) { .study-question-actions button { min-height: 44px; min-width: 44px; } }

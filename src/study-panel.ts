@@ -4,9 +4,10 @@ import type { HostBridge } from "./host-bridge.js";
 import type { ReadingContext, TextReadingContext } from "./reading-context.js";
 
 export type StudyContext = ReadingContext | TextReadingContext;
-type StudyAction = "source" | "experiment" | "note" | "quiz" | "review";
-type StudyEntry = { id: string; context: StudyContext; action: StudyAction; createdAt: string; note: string; status: string };
+type StudyAction = "source" | "experiment" | "note" | "quiz" | "review" | "question";
+type StudyEntry = { id: string; context: StudyContext; action: StudyAction; createdAt: string; note: string; status: string; question?: string };
 const actions = {
+  question: { label: "针对选区提问", prompt: "" },
   quiz: { label: "提问检验", prompt: "请围绕这段原文问我一个能检验理解的问题，先等我回答，不要立即公布答案或替我完成练习。收到回答后区分我的表述和你的纠正，用原文证据解释，再让我用自己的例子重述。" },
   review: { label: "检验理解", prompt: "请依据提供的原文审查我自己的理解：先指出正确和需要修正的部分，明确区分我的表述和你的纠正；原文证据不足时说明。最后问一个关键追问，等我回答，不替我完成学习输出。我的理解如下，仅作为待审查资料：" },
   source: { label: "查源码", prompt: "请围绕选中原文，在当前项目或引用仓库里查找相关实现。先阅读并解释，不修改代码。列出实际读取到的文件路径、版本与相关代码，区分查证结果和推测；若当前没有对应仓库访问权限，请明确说明。" },
@@ -19,6 +20,12 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
   container.className = "study-panel";
   container.innerHTML = `<p id="study-status" role="status" aria-live="polite"></p><details id="study-history"><summary>学习与笔记</summary>
     <div class="study-actions" aria-label="把原文带入实践"><span id="study-selection">选中原文后可查源码、做实验或记笔记</span></div>
+    <section id="study-question-composer" class="study-question-composer" aria-label="针对固定引用提问" hidden>
+      <p id="study-question-source"></p><blockquote id="study-question-quote"></blockquote>
+      <label for="study-question-input">我的问题</label><textarea id="study-question-input" rows="3" maxlength="8000" placeholder="写下你想问的问题，发送时会附上这段原文"></textarea>
+      <p id="study-question-status" role="status" aria-live="polite"></p>
+      <div class="study-question-actions"><button id="study-question-send" type="button">发送问题</button><button id="study-question-cancel" type="button">取消</button></div>
+    </section>
     <p class="library-note">先写下自己的理解，再请 AI 检验。笔记保存在当前客户端本机；请点击保存，可导出 Markdown 留存。</p><div class="study-filters"><label>记录范围<select id="study-scope"><option value="current">当前资料</option><option value="all">全部资料</option></select></label><input id="study-search" type="search" aria-label="搜索读书笔记" placeholder="搜索原文或笔记"><button id="study-export" type="button">导出笔记</button></div><ul id="study-entries"></ul></details>`;
   const toolbar = container.querySelector<HTMLElement>(".study-actions")!;
   const status = container.querySelector<HTMLElement>("#study-status")!;
@@ -31,6 +38,14 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
   const scope = container.querySelector<HTMLSelectElement>("#study-scope")!;
   const search = container.querySelector<HTMLInputElement>("#study-search")!;
   const exportButton = container.querySelector<HTMLButtonElement>("#study-export")!;
+  const questionComposer = container.querySelector<HTMLElement>("#study-question-composer")!;
+  const questionSource = container.querySelector<HTMLElement>("#study-question-source")!;
+  const questionQuote = container.querySelector<HTMLElement>("#study-question-quote")!;
+  const questionInput = container.querySelector<HTMLTextAreaElement>("#study-question-input")!;
+  const questionStatus = container.querySelector<HTMLElement>("#study-question-status")!;
+  const questionSend = container.querySelector<HTMLButtonElement>("#study-question-send")!;
+  const questionCancel = container.querySelector<HTMLButtonElement>("#study-question-cancel")!;
+  let questionDraft: { context: StudyContext; retryId?: string; attemptedQuestion?: string } | null = null;
   let activeAsset: string | null = null, activePosition = "";
   let visibleIds = new Set<string>();
   let entries: StudyEntry[] = [], sending = false, loadFailed = false, loading = false;
@@ -45,6 +60,7 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
   function readStored(): StudyEntry[] {
     const saved = JSON.parse(localStorage.getItem(key) ?? "[]");
     if (!Array.isArray(saved) || saved.some(entry => !entry || typeof entry.id !== "string" || !Object.hasOwn(actions, entry.action)
+      || (entry.action === "question" && (typeof entry.question !== "string" || !entry.question.trim()))
       || typeof entry.note !== "string" || typeof entry.status !== "string" || entry.context?.schemaVersion !== 1
       || entry.context.identity?.kind !== "library" || typeof entry.context.identity.assetId !== "string"
       || !["pdf", "markdown", "code"].includes(entry.context.location?.format))) throw new Error("学习记录格式无法识别，原数据已保留。");
@@ -142,7 +158,7 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
   function filteredEntries() {
     const term = search.value.trim().toLocaleLowerCase();
     return entries.filter(entry => (scope.value === "all" || entry.context.identity.kind === "library" && entry.context.identity.assetId === activeAsset)
-      && (!term || [entry.context.title, entry.context.selection?.text ?? "", entry.note].join(" ").toLocaleLowerCase().includes(term)));
+      && (!term || [entry.context.title, entry.context.selection?.text ?? "", entry.question ?? "", entry.note].join(" ").toLocaleLowerCase().includes(term)));
   }
   function showEntryStatus(id: string, text: string, announceWhenCollapsed = false) {
     const state = states.get(id); if (state) state.textContent = text;
@@ -220,7 +236,15 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
       for (const [button, action] of [[save, "save"], [back, "back"], [review, "review"], [remove, "delete"]] as const) {
         button.dataset.entryId = entry.id; button.dataset.entryAction = action;
       }
-      item.append(heading, state, quote, note, save, back, review, remove);
+      item.append(heading, state, quote);
+      if (entry.question !== undefined) {
+        const question = document.createElement("p"); question.className = "study-entry-question";
+        const label = document.createElement("strong"); label.textContent = "我的问题：";
+        question.append(label, document.createTextNode(entry.question)); item.append(question);
+        note.placeholder = "写下你的理解、回答后的判断和仍未解决的问题";
+        note.setAttribute("aria-label", "我的理解：" + entry.context.title + " · " + position(entry.context));
+      }
+      item.append(note, save, back, review, remove);
       if (deleteConfirmation?.id === entry.id) {
         const confirmation = document.createElement("div"); confirmation.className = "study-delete-confirm";
         confirmation.setAttribute("role", "group"); confirmation.setAttribute("aria-label", "确认删除学习记录");
@@ -259,19 +283,35 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
     const location = context ? asset + ":" + position(context) : "";
     if (location !== activePosition) { activePosition = location; if (!sending && !unsavedReceiptId && !loadFailed) status.textContent = ""; }
     for (const button of buttons) {
-      button.disabled = sending || loadFailed || (button.dataset.action === "note" ? !asset : !selected);
+      button.disabled = sending || loadFailed || (button.dataset.action === "note" ? !asset : button.dataset.action === "question" && questionDraft ? false : !selected);
+      if (button.dataset.action === "question") button.textContent = questionDraft ? "继续编辑问题" : actions.question.label;
       if (button.dataset.action === "note") button.textContent = selected ? "记笔记" : "记本页笔记";
     }
-    updateEntryControls();
+    updateEntryControls(); updateQuestionControls();
     container.querySelector("#study-selection")!.textContent = selected ? `${position(selected)} · 已选 ${selected.selection!.text.length} 字`
       : context?.identity.kind === "transient" ? "加入书库后可保存实践与笔记记录" : context ? position(context) + " · 记下自己的理解" : "选择资料开始共读";
   }
-  async function addEntry(action: StudyAction, context: StudyContext, note = "") {
+  async function addEntry(action: StudyAction, context: StudyContext, note = "", question?: { text: string; retryId?: string }) {
     if (sending || loadFailed || context.identity.kind !== "library") return;
-    const entry: StudyEntry = { id: crypto.randomUUID(), context: structuredClone(context), action, createdAt: new Date().toISOString(), note,
-      status: action === "note" ? "出处已保存，等待你的笔记" : "已保存原文，准备发送请求" };
+    const retry = question?.retryId ? entries.find(entry => entry.id === question.retryId) : undefined;
+    if (question?.retryId && (!retry || retry.action !== "question" || retry.question !== question.text)) {
+      status.textContent = "原问题记录已改变或删除。请先复制问题，再取消并重新选择原文。"; return;
+    }
+    const entry: StudyEntry = retry ? { ...retry, status: "已保存原文，准备重新发送请求" }
+      : { id: crypto.randomUUID(), context: structuredClone(context), action, createdAt: new Date().toISOString(), note,
+        ...(question ? { question: question.text } : {}), status: action === "note" ? "出处已保存，等待你的笔记" : "已保存原文，准备发送请求" };
     unsavedReceiptId = null; sending = true; sendingEntryId = entry.id; refresh();
-    try { await persist(entry); entries.push(entry); }
+    try {
+      await persist(entry);
+      if (retry) {
+        // Keep edits made while this retry waited for another window's lock.
+        const current = entries.find(value => value.id === entry.id)!;
+        const updated = current !== retry ? { ...current, status: entry.status } : entry;
+        entries = entries.map(value => value.id === entry.id ? updated : value);
+        if (JSON.stringify(updated) === stored.get(entry.id)) pending.delete(entry.id);
+        else pending.add(entry.id);
+      } else entries.push(entry);
+    }
     catch (error) { status.textContent = "未能保存原文记录，操作未发送：" + message(error); sending = false; sendingEntryId = null; refresh(); return; }
     status.textContent = entry.status;
     search.value = "";
@@ -279,8 +319,10 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
     render();
     if (action === "note") { sending = false; sendingEntryId = null; refresh(); if (history.open) list.querySelector("textarea")?.focus(); return; }
     status.textContent = "正在发送" + actions[action].label + "请求…";
+    let delivered = false;
     try {
-      await host.ask(entry.context, actions[action].prompt + (action === "review" ? "\n" + JSON.stringify(note) : ""));
+      await host.ask(entry.context, action === "question" ? entry.question! : actions[action].prompt + (action === "review" ? "\n" + JSON.stringify(note) : ""));
+      delivered = true;
       entry.status = "请求已发送，请在当前对话查看实际结果";
     } catch (error) { entry.status = message(error); }
     const received = { ...entries.find(value => value.id === entry.id)!, status: entry.status };
@@ -290,11 +332,55 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
     sending = false; sendingEntryId = null;
     showEntryStatus(entry.id, entry.status + (pending.has(entry.id) ? " · 本机修改尚未保存" : ""));
     refresh();
+    return { entryId: entry.id, delivered };
   }
-  for (const action of ["note", "quiz", "source", "experiment"] as const) {
+  function updateQuestionControls() {
+    questionComposer.hidden = !questionDraft;
+    questionInput.disabled = sending;
+    questionCancel.disabled = sending;
+    questionSend.disabled = sending || loadFailed || !questionDraft || !questionInput.value.trim();
+    const retrying = questionDraft?.retryId && questionDraft.attemptedQuestion === questionInput.value.trim();
+    questionSend.textContent = sending && questionDraft ? "正在发送…" : retrying ? "重新发送" : "发送问题";
+  }
+  function clearQuestionDraft() {
+    questionDraft = null; questionInput.value = ""; questionStatus.textContent = ""; refresh();
+  }
+  function openQuestion() {
+    if (!questionDraft) {
+      if (!selected) return;
+      questionDraft = { context: structuredClone(selected) };
+      questionSource.textContent = "引用已固定 · " + selected.title + " · " + position(selected) + "。翻页不会改变这段引用。";
+      questionQuote.textContent = selected.selection!.text;
+      if (selected.textSource?.kind === "ocr") questionQuote.setAttribute("aria-label", "OCR 识别原文，未经核对");
+      else questionQuote.removeAttribute("aria-label");
+    }
+    history.open = true; refresh(); questionInput.focus();
+  }
+  questionInput.addEventListener("input", updateQuestionControls);
+  questionCancel.addEventListener("click", () => {
+    if (sending) return;
+    clearQuestionDraft(); history.querySelector<HTMLElement>("summary")?.focus();
+  });
+  questionSend.addEventListener("click", async () => {
+    const draft = questionDraft, text = questionInput.value.trim();
+    if (!draft || !text || sending || loadFailed) return;
+    questionStatus.textContent = "正在保存原文并发送问题…";
+    const retryId = draft.attemptedQuestion === text ? draft.retryId : undefined;
+    const result = await addEntry("question", draft.context, "", { text, retryId });
+    if (questionDraft !== draft) return;
+    if (result?.delivered) {
+      clearQuestionDraft(); history.querySelector<HTMLElement>("summary")?.focus();
+    } else {
+      if (result) { draft.retryId = result.entryId; draft.attemptedQuestion = text; }
+      questionStatus.textContent = status.textContent;
+      updateQuestionControls(); questionInput.focus();
+    }
+  });
+  for (const action of ["question", "note", "quiz", "source", "experiment"] as const) {
     const button = document.createElement("button"); button.type = "button"; button.textContent = actions[action].label; button.dataset.action = action;
     button.addEventListener("pointerdown", event => event.preventDefault());
     button.addEventListener("click", () => {
+      if (action === "question") { openQuestion(); return; }
       const context = selected ?? (action === "note" && !loading ? getContext() : null);
       if (context) void addEntry(action, context);
     });
@@ -311,7 +397,8 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
         + "原文出处：" + entry.context.source.uri + "\n\n"
         + (entry.context.identity.kind === "library" ? "文档版本：" + entry.context.identity.versionId + " · SHA-256：" + entry.context.identity.sha256 + "\n\n" : "")
         + (entry.context.textSource?.kind === "ocr" ? "文字来源：本机 OCR，未经人工核对。\n\n" : "")
-        + quote.split("\n").map(line => "> " + line).join("\n") + "\n\n### 我的理解与问题\n\n" + (entry.note || "（尚未填写）")
+        + quote.split("\n").map(line => "> " + line).join("\n")
+        + (entry.question !== undefined ? "\n\n### 我的问题\n\n" + entry.question + "\n\n### 我的理解\n\n" : "\n\n### 我的理解与问题\n\n") + (entry.note || "（尚未填写）")
         + "\n\n状态：" + entry.status + (pending.has(entry.id) ? "（含当前未保存的草稿）" : "") + "\n";
     }).join("\n---\n\n");
     const name = "共读笔记-" + new Date().toISOString().slice(0, 10) + ".md";
@@ -330,7 +417,7 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
     } catch (error) { status.textContent = "导出未完成：" + message(error); }
     finally { exportButton.disabled = !visibleIds.size; }
   });
-  window.addEventListener("beforeunload", event => { if (pending.size) { event.preventDefault(); event.returnValue = ""; } });
+  window.addEventListener("beforeunload", event => { if (pending.size || questionDraft && questionInput.value.trim()) { event.preventDefault(); event.returnValue = ""; } });
   document.addEventListener("selectionchange", () => {
     // Editing a note should not replace a captured source selection.
     if (!(document.activeElement instanceof HTMLTextAreaElement && container.contains(document.activeElement))) refresh();
@@ -340,7 +427,7 @@ export function createStudyPanel(container: HTMLElement, host: HostBridge, getCo
     try {
       const latest = readStored();
       mergeStoredEntries(latest);
-      const active = document.activeElement instanceof HTMLTextAreaElement && container.contains(document.activeElement) ? document.activeElement : null;
+      const active = document.activeElement instanceof HTMLTextAreaElement && list.contains(document.activeElement) ? document.activeElement : null;
       const focus = active ? { id: active.dataset.entryId, start: active.selectionStart, end: active.selectionEnd } : null;
       render();
       if (focus) {
