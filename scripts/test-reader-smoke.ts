@@ -161,7 +161,7 @@ try {
   check("real MCP PDF loading and selectable text under the resource's declared CSP");
 
   await expect(view.locator("#reader-navigation")).toContainText("第一章 起步");
-  await view.locator('#reader-navigation button[data-page="2"]').click();
+  await view.locator('#reader-navigation .reader-outline-jump[data-page="2"]').click();
   await expect(view.locator("#page-input")).toHaveValue("2");
   await expect(view.locator("#text-layer")).toContainText("Beta unique second-page context.");
   check("nested PDF outline destination navigation");
@@ -207,7 +207,7 @@ try {
   await expect.poll(async () => textOf((await observations()).contexts.at(-1))).not.toContain("<pdf-selection>");
   check("turning page clears selected-text question and model context");
 
-  await view.locator('#reader-navigation button[data-page="1"]').click();
+  await view.locator('#reader-navigation .reader-outline-jump[data-page="1"]').click();
   await selectText("你好");
   await expect.poll(async () => textOf((await observations()).contexts.at(-1))).toContain("<pdf-selection>你好</pdf-selection>");
   await view.locator("#explain-selection-btn").click();
@@ -279,8 +279,8 @@ try {
   await page.setViewportSize({ width: 380, height: 850 });
   await expect(view.locator("#outline-toggle")).toBeVisible();
   await view.locator("#outline-toggle").click();
-  await expect(view.locator('#reader-navigation button[data-page="3"]')).toBeVisible();
-  await view.locator('#reader-navigation button[data-page="3"]').click();
+  await expect(view.locator('#reader-navigation .reader-outline-jump[data-page="3"]')).toBeVisible();
+  await view.locator('#reader-navigation .reader-outline-jump[data-page="3"]').click();
   await expect(view.locator("#page-input")).toHaveValue("3");
   await expect(view.getByRole("button", { name: "展开阅读器", exact: true })).toBeVisible();
   await page.screenshot({ path: path.join(artifacts, "reader-smoke-sidebar.png"), fullPage: true });
