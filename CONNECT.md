@@ -4,7 +4,48 @@
 数据通过 MCP 传给内嵌阅读器；这条路径不需要 OpenAI API key、公开域名或隧道。
 ChatGPT 网页的远程连接是另一条路径，见本文最后一节。
 
-## 安装本地连接
+## 安装完整本地插件
+
+在正式维护目录中构建，然后安装：
+
+```powershell
+npm ci
+npm run build
+.\scripts\install-plugin.ps1
+codex plugin list --marketplace gongdu-local --json
+```
+
+安装后的插件名为 **共读**，本地来源为 **共读 · 本机插件**，技术标识为
+`gongdu@gongdu-local`。CLI 返回 `installed: true` 和 `enabled: true` 后，可在客户端
+「插件」页面查找。列表仍旧时先重新进入该页面；必要时保存其他工作后正常退出并重开客户端，
+不要强制结束后台进程。
+
+`plugins/gongdu/` 保存版本化的插件清单、图标与共读技能；脚本生成忽略的
+`.local-plugin/` 市场目录及本机 MCP 配置，再由 Codex 安装。阅读器仍使用本项目
+的 `dist/index.js` 和原来的 `%LOCALAPPDATA%\GongduReader` 书库，不复制代码或书库。
+请保留项目目录、Node.js、依赖与构建结果。项目移动或授权路径改变后重新执行安装脚本；
+更新插件清单或技能时同步修改两个清单的版本号，再重装，不手工编辑插件缓存。
+
+脚本支持 `-PdfPath`、`-LibraryPath` 和 `-WhatIf`，文件边界与下面的独立 MCP 方式一致；
+重新安装时需要传入全部希望保留的授权路径。默认仅授权示例 PDF。
+完整插件使用 `gongdu` 连接名，旧的独立注册使用 `pdf_reader`。迁移后先验证：
+
+```powershell
+npm run test:plugin
+```
+
+此检查会启动临时 Codex app-server，创建仅在内存中的验证会话，确认插件清单、MCP 工具、
+书库调用、阅读界面资源和未授权文件拒绝；不调用聊天模型，也不证明桌面插件页已刷新。
+检查成功且旧连接只服务共读时，可移除旧注册以避免重复工具：
+
+```powershell
+codex mcp remove pdf_reader
+```
+
+这只移除连接配置，不删除书库或笔记。如需恢复旧连接，使用下方的 `install-mcp.ps1`。
+加载插件后，在聊天中说“打开共读书库”，由助手调用 `gongdu` 的 `open_library`。
+
+## 仅安装独立 MCP 连接
 
 在项目目录执行一次构建：
 
@@ -57,7 +98,8 @@ codex mcp get pdf_reader --json
 
 Codex 官方 app-server 提供 `config/mcpServer/reload`：重读磁盘配置，并为已加载
 任务排队刷新 MCP 工具。它可以保留当前任务，不要求新建任务。调用后，需要等
-刷新完成，并在后续模型轮次核对 `pdf_reader` 工具确实出现在工具列表。
+刷新完成，并在后续模型轮次核对 `gongdu`（完整插件）或 `pdf_reader`（独立连接）
+工具确实出现在工具列表。
 
 当前 Windows 桌面版本（26.915.4065）通过 stdio 连接后台，不使用
 `codex app-server proxy` 所需的控制 socket。因此不能把从终端发送 reload
@@ -79,7 +121,7 @@ Codex 官方 app-server 提供 `config/mcpServer/reload`：重读磁盘配置，
 
 在启用连接的任务中发出：
 
-> 用 pdf_reader 打开示例 PDF，显示内嵌阅读器。
+> 用共读打开示例 PDF，显示内嵌阅读器。
 
 模型应先发现 PDF，再调用 `display_pdf`。工具卡应显示真正的阅读器，展开后
 可翻页、缩放、搜索和选中文字。只返回文本或下载链接不算内嵌阅读成功。
@@ -105,8 +147,9 @@ Codex 官方 app-server 提供 `config/mcpServer/reload`：重读磁盘配置，
 不必为每本书重新注册 MCP。原有按路径调用仍只允许明确授权的文件。
 
 `open_library` 声明了 MCP 任务入口；支持该入口的客户端可能在右侧 **＋ → PDF 阅读器**
-菜单中显示它。菜单没有该项不等于服务未安装：先检查 `codex mcp get pdf_reader --json`
-中的启用状态，并通过聊天直接打开书库。打开书库会创建新的阅读器实例，并恢复本机资料，
+菜单中显示它。菜单没有该项不等于服务未安装：完整插件检查
+`codex plugin list --marketplace gongdu-local --json`；独立连接检查
+`codex mcp get pdf_reader --json`，再通过聊天直接打开书库。打开书库会创建新的阅读器实例，并恢复本机资料，
 不会接管聊天中已经打开的文档。若应用显示在聊天里，可用下面的展开操作进入侧栏。
 连接不可用或显示旧界面时，再按“让当前任务加载新配置”检查刷新；直接打开
 `mcp-app.html` 文件不能替代已连接宿主的阅读器。

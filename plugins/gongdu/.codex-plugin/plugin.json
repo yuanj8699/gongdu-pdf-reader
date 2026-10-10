@@ -1,0 +1,21 @@
+{
+  "name": "gongdu",
+  "version": "2.0.4",
+  "description": "在聊天旁阅读本机 PDF、扫描页、arXiv 论文和 GitHub 资料，围绕固定原文提问并保存读书笔记。",
+  "author": { "name": "Yuan" },
+  "repository": "https://github.com/yuanj8699/gongdu-pdf-reader",
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills",
+  "interface": {
+    "displayName": "共读",
+    "shortDescription": "读原文、提问题、记笔记",
+    "longDescription": "本机书库与互动阅读器：阅读 PDF，按页识别扫描文字，对照原文提问，保存和导出学习笔记。沿用本机阅读器与书库，模型回答由当前聊天生成。",
+    "developerName": "Yuan",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "defaultPrompt": ["打开共读书库", "围绕我选中的原文，先问一个问题检验我的理解"],
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/icon.svg",
+    "websiteURL": "https://github.com/yuanj8699/gongdu-pdf-reader"
+  }
+}

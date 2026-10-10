@@ -2,6 +2,7 @@ dist/
 *.jsonl
 node_modules/
 .tmp/
+.local-plugin/
 test-results/
 playwright-report/
 tests/.artifacts/

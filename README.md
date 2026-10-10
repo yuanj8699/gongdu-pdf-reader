@@ -37,10 +37,14 @@ git clone https://github.com/yuanj8699/gongdu-pdf-reader.git
 cd gongdu-pdf-reader
 npm ci
 npm run build
-.\scripts\install-mcp.ps1
+.\scripts\install-plugin.ps1
 ```
 
-已有本地维护目录时直接使用原目录。安装脚本注册本机 stdio 服务，宿主连接时自动启动进程，无须另开服务窗口。默认只授权仓库中的示例 PDF，不扫描整个磁盘。
+已有本地维护目录时直接使用原目录。安装脚本注册“共读 · 本机插件”来源，并安装、启用 **共读**。在客户端「插件」页面可以查看共读；支持浏览本地来源的客户端也可在目录中选择此来源。页面仍显示旧列表时先重新进入页面，必要时保存工作后正常退出并重开客户端。
+
+插件通过 stdio 启动现有项目的 `dist/index.js`，无须另开服务窗口。默认只授权仓库中的示例 PDF，不扫描整个磁盘。请保留本项目及其依赖、构建结果；这是本机包装，不是独立部署的云插件。机器路径只写入被 Git 忽略的 `.local-plugin/`，安装缓存由 Codex 管理。
+
+如果只需要独立 MCP 连接，仍可使用 `scripts/install-mcp.ps1`；它显示在「MCP」标签，名称为 `pdf_reader`。完整插件附带的连接名为 `gongdu`。从旧方式迁移时，先验证插件，再移除旧注册，见 [CONNECT.md](CONNECT.md)。
 
 客户端加载连接后，在当前聊天中说“打开共读书库”，助手会调用本地阅读器并显示书库。选择或拖入 PDF，再点击“开始阅读”。支持任务入口的客户端也可能在 **右侧＋ → PDF 阅读器** 中显示入口；菜单没有该项时可直接通过聊天打开。连接不可用或仍显示旧界面时，按 [CONNECT.md](CONNECT.md) 检查和刷新。
 
@@ -49,7 +53,7 @@ npm run build
 ### 连接已有 PDF 文件夹
 
 ```powershell
-.\scripts\install-mcp.ps1 -LibraryPath 'D:\Learning\Books'
+.\scripts\install-plugin.ps1 -LibraryPath 'D:\Learning\Books'
 ```
 
 书库可以扫描并批量入库，原目录只读，入库使用独立副本。重新注册时需传入全部需要保留的文件夹；不自动监控原目录或同步原文件删除。
@@ -57,7 +61,7 @@ npm run build
 也可只授权指定文件：
 
 ```powershell
-.\scripts\install-mcp.ps1 -PdfPath 'D:\Learning\paper.pdf'
+.\scripts\install-plugin.ps1 -PdfPath 'D:\Learning\paper.pdf'
 ```
 
 ### GitHub 授权
@@ -155,6 +159,7 @@ npm run build
 - 缩略图分组、目录、书签、多文件导入、失败与取消。
 - 自由问题的固定引用、先存后发、失败重试、问题／理解分离、导出重开及双窗口删除和迟到回执。
 - Web Lock 等待期间的新笔记草稿保留、存储失败提示、笔记准确返回原文；桌面／390px、触控按钮、键盘和五种主题。
+- 本地插件安装、名称与技能发现、Codex 新宿主加载 `gongdu` 工具、打开书库、读取互动界面资源和未授权文件拒绝；可用 `npm run test:plugin` 重现（先安装插件，需要本机 Codex CLI）。
 
 这些检查采用合成材料和测试宿主；部分 GitHub API／OCR 返回值使用固定样例检验边界，不代表真实私有仓库或复杂书籍已完整验证。
 

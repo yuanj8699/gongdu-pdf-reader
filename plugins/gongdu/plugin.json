@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "gongdu",
+  "version": "2.0.4",
+  "description": "在聊天旁阅读本机 PDF、扫描页、arXiv 论文和 GitHub 资料，围绕固定原文提问并保存读书笔记。",
+  "author": { "name": "Yuan" },
+  "repository": "https://github.com/yuanj8699/gongdu-pdf-reader"
+}

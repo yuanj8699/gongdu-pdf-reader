@@ -8,13 +8,18 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = path.join(root, "tests/fixtures/reader-smoke.pdf");
+const configFlag = process.argv.indexOf("--mcp-config");
+const mcpServers = configFlag === -1 ? null
+  : JSON.parse(await fs.readFile(process.argv[configFlag + 1], "utf8")).mcpServers;
+const configuredServer = mcpServers?.gongdu ?? mcpServers?.pdf_reader;
+if (configFlag !== -1) assert.ok(configuredServer, "MCP config must contain the reader server");
 const libraryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "reader-stdio-"));
 const transport = new StdioClientTransport({
-  command: process.execPath,
-  args: [path.join(root, "dist/index.js"), "--stdio", fixture],
-  cwd: root,
+  command: configuredServer?.command ?? process.execPath,
+  args: configuredServer?.args ?? [path.join(root, "dist/index.js"), "--stdio", fixture],
+  cwd: configuredServer?.cwd ?? root,
   stderr: "pipe",
-  env: { ...process.env, PDF_READER_DATA_DIR: libraryDirectory },
+  env: { ...process.env, ...configuredServer?.env, PDF_READER_DATA_DIR: libraryDirectory },
 });
 let stderr = "";
 transport.stderr?.on("data", data => { stderr += data; });

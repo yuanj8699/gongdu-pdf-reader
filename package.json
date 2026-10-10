@@ -19,6 +19,7 @@
     "test": "bun test src/pdf-annotations.test.ts src/reading-context.test.ts server.test.ts arxiv.test.ts github.test.ts",
     "test:reader": "bun scripts/test-reader-smoke.ts",
     "test:stdio": "node scripts/test-mcp-stdio.mjs",
+    "test:plugin": "node scripts/test-plugin-host.mjs",
     "test:library": "node scripts/test-library-stdio.mjs",
     "test:local-library": "node scripts/test-local-library.mjs",
     "test:library-ui": "bun scripts/test-library-reader.ts",
