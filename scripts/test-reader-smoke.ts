@@ -185,10 +185,14 @@ try {
   await expect(view.locator("#page-input")).toHaveValue("2");
   await expect(view.locator("#reader-navigation")).toContainText("第一章 起步");
   await selectText("章");
-  await view.locator("#explain-selection-btn").click();
+  const selectedChapter = await view.locator("#text-layer span").filter({ hasText: /^章$/ }).boundingBox();
+  assert.ok(selectedChapter);
+  await page.mouse.click(selectedChapter.x + selectedChapter.width / 2, selectedChapter.y + selectedChapter.height / 2, { button: "right" });
+  await view.getByRole("menuitem", { name: "向 GPT 提问", exact: true }).click();
+  await expect(view.locator("#selection-context-menu")).toBeHidden();
   await expect.poll(async () => (await observations()).messages.length).toBe(2);
   assert.match(textOf((await observations()).messages[1]), /章/);
-  check("model-requested expanded reader preserves page, outline and selection questions");
+  check("expanded reader preserves page and outline; a real selected-text right-click sends one question to the host");
 
   await view.getByRole("button", { name: "收起阅读器", exact: true }).click();
   await expect(view.getByRole("button", { name: "展开阅读器", exact: true })).toBeVisible();

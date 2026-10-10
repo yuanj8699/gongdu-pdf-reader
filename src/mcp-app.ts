@@ -82,6 +82,7 @@ import { createReaderNavigation } from "./reader-navigation.js";
 import { createLibraryPanel, legacyReadingState, type LibraryCall } from "./library-panel.js";
 import type { LibraryAsset, ReadingState } from "./library-types.js";
 import { createTextReader } from "./text-reader.js";
+import { createSelectionMenu } from "./selection-menu.js";
 import { HostBridge } from "./host-bridge.js";
 import { createReaderWorkspace } from "./reader-workspace.js";
 import { createReaderSettings } from "./reader-settings.js";
@@ -251,6 +252,7 @@ pageWrapperEl.append(referenceLayerEl);
 const explainSelectionBtn = document.getElementById("explain-selection-btn") as HTMLButtonElement;
 const highlightSelectionBtn = document.getElementById("highlight-selection-btn") as HTMLButtonElement;
 const selectionStatusEl = document.getElementById("selection-status")!;
+const selectionMenu = createSelectionMenu();
 const outlineToggle = document.getElementById("outline-toggle") as HTMLButtonElement;
 const readerNavigation = createReaderNavigation({
   container: document.getElementById("reader-navigation")!,
@@ -379,6 +381,7 @@ function refreshSelection() {
     : selectionFeedback?.text ?? "选中原文，向小吉提问";
 }
 function clearReadingSelection() {
+  selectionMenu.close();
   contextRevision++;
   selectionFeedback = null;
   selectionSnapshot = null;
@@ -391,9 +394,7 @@ explainSelectionBtn.addEventListener("pointerdown", (event) => {
   // Keep the PDF range alive while the mouse focuses the action.
   if (pressedSelection) event.preventDefault();
 });
-explainSelectionBtn.addEventListener("click", async () => {
-  const selected = pressedSelection ?? readSelection();
-  pressedSelection = null;
+async function askPdfSelection(selected: ReadingSelection | null) {
   if (!selected || selected.document !== pdfDocument || selected.page !== currentPage || explanationSending) return;
   explanationSending = true;
   explainSelectionBtn.disabled = true;
@@ -410,6 +411,11 @@ explainSelectionBtn.addEventListener("click", async () => {
     explainSelectionBtn.disabled = !readSelection();
     highlightSelectionBtn.disabled = !readSelection()?.context.location.rects.length;
   }
+}
+explainSelectionBtn.addEventListener("click", () => {
+  const selected = pressedSelection ?? readSelection();
+  pressedSelection = null;
+  void askPdfSelection(selected);
 });
 highlightSelectionBtn.addEventListener("pointerdown", event => {
   pressedSelection = readSelection();
@@ -921,6 +927,31 @@ async function openLibraryAsset(assetId: string) {
 const libraryPanel = createLibraryPanel(document.getElementById("library-panel")!, callLibrary, openLibraryAsset);
 const textReader = createTextReader(document.getElementById("text-reader")!, callLibrary, host,
   (asset, line) => readerWidgets.setProgress({ current: line, total: asset.pageCount, unit: "行", title: asset.title }));
+let rightClickSelection: { send: () => void } | null = null;
+function selectedContextAction(target: Node) {
+  const element = target instanceof Element ? target : target.parentElement;
+  // Keep editable fields and links usable even while a reading range remains selected.
+  if (element?.closest("#form-layer, input, textarea, select, button, a, [contenteditable]")) return null;
+  if (canvasContainerEl.contains(target)) {
+    const selected = readSelection();
+    return selected && !explanationSending ? { send: () => { void askPdfSelection(selected); } } : null;
+  }
+  if (document.getElementById("text-reader-content")!.contains(target)) {
+    const context = textReader.context();
+    return context?.selection && !textReader.sending() ? { send: () => { void textReader.askSelection(context); } } : null;
+  }
+  return null;
+}
+document.addEventListener("pointerdown", event => {
+  rightClickSelection = event.button === 2 ? selectedContextAction(event.target as Node) : null;
+  // Capture before the browser can focus a different word on right-click.
+  if (rightClickSelection) event.preventDefault();
+}, true);
+document.addEventListener("contextmenu", event => {
+  const action = rightClickSelection ?? selectedContextAction(event.target as Node);
+  rightClickSelection = null;
+  if (action) selectionMenu.show(event, action.send);
+});
 const ocrDisclosure = document.createElement("details"); ocrDisclosure.id = "reader-ocr";
 const ocrSummary = document.createElement("summary"); ocrSummary.textContent = "文字识别";
 ocrSummary.addEventListener("pointerdown", event => { if (readSelection()) event.preventDefault(); });

@@ -103,8 +103,16 @@ try {
     const range = document.createRange(); range.selectNodeContents(document.querySelector(sel)!);
     const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); document.dispatchEvent(new Event("selectionchange"));
   }, selector);
-  await select("#text-reader-content strong");
-  await view.locator("#text-reader-explain").click();
+  const markdownSelection = await view.locator("#text-reader-content strong").boundingBox();
+  assert.ok(markdownSelection);
+  await page.mouse.move(markdownSelection.x + 1, markdownSelection.y + markdownSelection.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(markdownSelection.x + markdownSelection.width - 1, markdownSelection.y + markdownSelection.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(() => page.frames().find(f => f.url().endsWith("/app"))!.evaluate(() => window.getSelection()?.toString())).toBe("useful idea");
+  await page.mouse.click(markdownSelection.x + markdownSelection.width / 2, markdownSelection.y + markdownSelection.height / 2, { button: "right" });
+  await view.getByRole("menuitem", { name: "向 GPT 提问", exact: true }).click();
+  await expect(view.locator("#selection-context-menu")).toBeHidden();
   await expect.poll(() => page.evaluate(() => (window as any).observations.messages.length)).toBe(1);
   const message = await page.evaluate(() => (window as any).observations.messages[0].content[0].text);
   assert.ok(message.includes("useful idea")); assert.ok(message.includes(commitA)); assert.ok(message.includes('"lineStart":3'));

@@ -115,16 +115,21 @@ export function createTextReader(container: HTMLElement, call: LibraryCall, host
     void host.openLink({ url: url.href }).catch(e => { status.textContent = errorText(e); });
   });
   explain.addEventListener("pointerdown", e => e.preventDefault());
-  explain.addEventListener("click", async () => {
-    const selected = snapshot;
-    if (!selected || sending) return;
+  async function askSelection(selected: TextReadingContext | null) {
+    if (!selected?.selection || sending || container.hidden || !asset || selected.identity.kind !== "library"
+      || selected.identity.assetId !== asset.assetId || selected.identity.versionId !== asset.versionId) return;
     sending = true; explain.disabled = true;
     try { await host.ask(selected, "请解释我选中的这段内容，并结合必要的附近上下文。"); status.textContent = "已发送选中原文和版本位置。"; }
     catch (error) { status.textContent = errorText(error); }
     finally { sending = false; explain.disabled = !snapshot; }
+  }
+  explain.addEventListener("click", () => {
+    void askSelection(snapshot);
   });
   return {
     context: currentContext,
+    askSelection,
+    sending: () => sending,
     async go(line: number) {
       go(line); save(); await saveWork;
       if (saveError) throw new Error(`阅读位置未保存：${saveError}`);
